@@ -1,0 +1,31 @@
+# XcodeGen spec — generates Reversal.xcodeproj (done automatically in GitHub Actions).
+name: Reversal
+options:
+  bundleIdPrefix: com.reversalterminal
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    TARGETED_DEVICE_FAMILY: "1"
+    CODE_SIGNING_ALLOWED: "NO"
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGN_IDENTITY: ""
+    DEVELOPMENT_TEAM: ""
+targets:
+  Reversal:
+    type: application
+    platform: iOS
+    sources:
+      - path: Reversal
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.reversalterminal.app
+        INFOPLIST_FILE: Reversal/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        GENERATE_INFOPLIST_FILE: "NO"
+        ENABLE_BITCODE: "NO"

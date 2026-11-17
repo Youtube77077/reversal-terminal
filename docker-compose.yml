@@ -1,0 +1,35 @@
+# Production stack: the bot + Caddy (automatic HTTPS certificates).
+#   1. cp .env.example .env   and fill in APP_PASSWORD (+ Polymarket keys if you want live trading)
+#   2. DOMAIN=<your-domain-or-IP.sslip.io> docker compose up -d --build
+services:
+  reversal:
+    build: .
+    image: reversal-terminal:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - API_HOST=0.0.0.0
+      - SERVE_FRONTEND=true
+    volumes:
+      - reversal-data:/app/backend/data
+    expose:
+      - "8000"
+
+  caddy:
+    image: caddy:2.8
+    restart: unless-stopped
+    depends_on: [reversal]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  reversal-data:
+  caddy-data:
+  caddy-config:

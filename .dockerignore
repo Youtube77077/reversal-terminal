@@ -1,0 +1,16 @@
+.git
+.github
+.env
+.env.*
+!.env.example
+**/node_modules
+**/.next
+frontend/out
+backend/.venv
+backend/data
+**/__pycache__
+**/.pytest_cache
+ios
+*.db
+*.db-wal
+*.db-shm

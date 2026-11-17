@@ -1,0 +1,75 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Cash-App-inspired design tokens (RGB triplets so Tailwind alpha modifiers work). */
+:root,
+.dark {
+  --font-mono: "SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, ui-monospace, monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --bg: 0 0 0;
+  --panel: 28 28 30;
+  --panel2: 40 40 43;
+  --line: 44 44 48;
+  --line2: 64 64 68;
+  --ink: 255 255 255;
+  --dim: 166 166 172;
+  --faint: 112 112 118;
+  --up: 0 214 75;
+  --down: 255 69 58;
+  --warn: 255 176 32;
+  --info: 64 156 255;
+  --accent: 0 214 75;
+  --cash: 0 214 75;
+  --oncash: 0 0 0;
+  color-scheme: dark;
+}
+
+.light {
+  --bg: 255 255 255;
+  --panel: 243 243 246;
+  --panel2: 232 232 237;
+  --line: 226 226 231;
+  --line2: 205 205 212;
+  --ink: 0 0 0;
+  --dim: 88 88 94;
+  --faint: 140 140 146;
+  --up: 0 170 60;
+  --down: 225 40 35;
+  --warn: 200 120 0;
+  --info: 0 110 230;
+  --accent: 0 190 65;
+  --cash: 0 214 75;
+  --oncash: 0 0 0;
+  color-scheme: light;
+}
+
+html, body {
+  background: rgb(var(--bg));
+  color: rgb(var(--ink));
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+* { scrollbar-width: thin; scrollbar-color: rgb(var(--line2)) transparent; }
+
+@layer components {
+  .panel { @apply rounded-3xl bg-panel; }
+  .panel-title { @apply text-[17px] font-bold tracking-tight text-ink; }
+  .label { @apply text-[12px] font-medium text-dim; }
+  .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .num { font-variant-numeric: tabular-nums; }
+  .page { @apply mx-auto w-full max-w-[1600px] animate-rise px-4 pb-32 pt-4 lg:px-8 lg:pb-10 lg:pt-6; }
+  .title-xl { @apply text-[34px] font-bold leading-tight tracking-tight; }
+  .money { @apply font-semibold leading-none tracking-tight; font-variant-numeric: tabular-nums; }
+  .grid-auto { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+  .pill { @apply inline-flex items-center justify-center rounded-full bg-panel2 px-5 py-2.5 text-[15px] font-semibold text-ink transition active:scale-[.97]; }
+  .row-hover { @apply transition-colors hover:bg-panel2/60; }
+  .safe-bottom { padding-bottom: max(env(safe-area-inset-bottom), 12px); }
+  .safe-top { padding-top: env(safe-area-inset-top); }
+}
+
+input[type="range"] { accent-color: rgb(var(--accent)); }
+button, a { -webkit-user-select: none; user-select: none; }
