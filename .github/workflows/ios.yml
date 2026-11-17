@@ -1,8 +1,8 @@
 name: Build iPhone app (.ipa)
 
-# Builds an UNSIGNED Reversal.ipa on a macOS runner. Sideloading apps (SideStore, AltStore,
-# Feather, ESign, Sideloadly, TrollStore) re-sign it on install. Every push to main that touches
-# ios/ publishes a fresh release you can download on your iPhone from GitHub.
+# Builds an UNSIGNED Reversal.ipa on a macOS runner (AltStore re-signs it on install), publishes it
+# as a GitHub Release, and updates the AltStore source so AltStore offers the new version as an update.
+#   AltStore source URL: https://github.com/<owner>/<repo>/releases/download/altstore/source.json
 on:
   push:
     branches: [main]
@@ -19,17 +19,19 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install XcodeGen
         run: brew install xcodegen
-      - name: Generate Xcode project
+      - name: Generate Xcode project (version 1.0.${{ github.run_number }})
         working-directory: ios
         run: |
           sed -i '' "s/CURRENT_PROJECT_VERSION: \"1\"/CURRENT_PROJECT_VERSION: \"${GITHUB_RUN_NUMBER}\"/" project.yml
+          sed -i '' "s/MARKETING_VERSION: \"1.0.0\"/MARKETING_VERSION: \"1.0.${GITHUB_RUN_NUMBER}\"/" project.yml
           xcodegen generate
       - name: Build (unsigned)
         working-directory: ios
         run: |
+          set -o pipefail
           xcodebuild -project Reversal.xcodeproj -scheme Reversal -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build | tail -40
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build 2>&1 | tail -60
       - name: Package .ipa
         working-directory: ios
         run: |
@@ -41,11 +43,50 @@ jobs:
         with:
           name: Reversal-ipa
           path: ios/Reversal.ipa
-      - name: Publish release
+      - name: Publish release + AltStore source
         if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="ios-build-${GITHUB_RUN_NUMBER}"
-          gh release create "$TAG" ios/Reversal.ipa --title "Reversal iOS build ${GITHUB_RUN_NUMBER}" \
-            --notes "Unsigned IPA — install with your sideloading app (it re-signs). Commit ${GITHUB_SHA::7}." --latest
+          VER="1.0.${GITHUB_RUN_NUMBER}"
+          TAG="ios-v${VER}"
+          gh release create "$TAG" ios/Reversal.ipa --title "Reversal iOS ${VER}" \
+            --notes "Unsigned IPA — install or update with AltStore. Commit ${GITHUB_SHA::7}." --latest
+          SIZE=$(stat -f%z ios/Reversal.ipa)
+          DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          BASE="https://github.com/${GITHUB_REPOSITORY}"
+          URL="${BASE}/releases/download/${TAG}/Reversal.ipa"
+          ICON="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/ios/Reversal/Assets.xcassets/AppIcon.appiconset/icon-1024.png"
+          cat > source.json <<EOF
+          {
+            "name": "Reversal",
+            "identifier": "com.reversalterminal.source",
+            "sourceURL": "${BASE}/releases/download/altstore/source.json",
+            "apps": [{
+              "name": "Reversal",
+              "bundleIdentifier": "com.reversalterminal.app",
+              "developerName": "Reversal",
+              "subtitle": "Bot remote",
+              "localizedDescription": "Remote for your Reversal bot server.",
+              "iconURL": "${ICON}",
+              "tintColor": "00D64B",
+              "version": "${VER}",
+              "versionDate": "${DATE}",
+              "downloadURL": "${URL}",
+              "size": ${SIZE},
+              "versions": [{
+                "version": "${VER}",
+                "buildVersion": "${GITHUB_RUN_NUMBER}",
+                "date": "${DATE}",
+                "downloadURL": "${URL}",
+                "size": ${SIZE},
+                "minOSVersion": "16.0"
+              }],
+              "appPermissions": {}
+            }],
+            "news": []
+          }
+          EOF
+          gh release view altstore >/dev/null 2>&1 || gh release create altstore --title "AltStore source" \
+            --notes "Add this URL in AltStore → Sources: ${BASE}/releases/download/altstore/source.json" --latest=false
+          gh release upload altstore source.json --clobber
