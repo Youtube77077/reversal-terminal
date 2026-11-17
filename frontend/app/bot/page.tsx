@@ -75,7 +75,7 @@ function Bot() {
     if (!acct) return;
     setBusy(true); setErr(null);
     try {
-      await post(`/api/accounts/${acct.id}/session`, {
+      await post(`/api/accounts/${acct.id}/session/start`, {
         risk_budget_mode: unit, risk_budget_value: num, stop_loss_pct: sl, take_profit_mode: tpMode,
         take_profit_value: tpMode === "off" ? 0 : Number(tpVal || 0), strategy_key: strat,
       });

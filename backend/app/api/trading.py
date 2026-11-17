@@ -457,7 +457,7 @@ class SessionIn(BaseModel):
     params: dict | None = None
 
 
-@router.post("/accounts/{aid}/session")
+@router.post("/accounts/{aid}/session/start")
 async def session_start(aid: int, body: SessionIn):
     from ..config import get_settings
     from ..services.events import record_event
