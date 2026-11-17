@@ -23,10 +23,11 @@ if not exist "executor\node_modules" (
 )
 
 start "REVERSAL - executor" cmd /k "cd /d %~dp0executor && node --env-file=..\.env index.mjs"
-start "REVERSAL - server" cmd /k "cd /d %~dp0backend && .venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8000"
+start "REVERSAL - server" cmd /k "cd /d %~dp0backend && .venv\Scripts\python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
 timeout /t 8 >nul
 start "" http://localhost:8000
-echo Open http://localhost:8000  (API docs: /docs). Close the two windows to stop.
+for /f "tokens=2 delims=:" %%a in ('ipconfig ^| findstr /c:"IPv4"') do echo iPhone app server address: http:%%a:8000
+echo Open http://localhost:8000 . Close the two windows to stop.
 exit /b 0
 
 :err
