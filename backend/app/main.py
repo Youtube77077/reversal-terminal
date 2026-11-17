@@ -83,11 +83,18 @@ async def _live_watch(collector) -> None:
     from .execution.eligibility import check_eligibility
     from .services import app_settings
     from .services.events import record_event
+    from .execution.eligibility import executor_health
+    from .execution.switch import live_enabled
+    from .services import credentials
     eng = collector.engine
-    eng.live_armed = bool(app_settings.get_all().get("live_armed")) and settings.live_trading_enabled
+    eng.live_armed = bool(app_settings.get_all().get("live_armed")) and live_enabled()
     while True:
         try:
-            if settings.live_trading_enabled:
+            if credentials.load():
+                h = await executor_health()
+                if (not h.get("ok") and "unreachable" not in str(h.get("error"))) or (h.get("liveEnabled") != live_enabled()):
+                    await credentials.push_to_executor(live_enabled())
+            if live_enabled():
                 el = await check_eligibility(force=True)
                 was = eng.live_eligible
                 eng.live_eligible = bool(el["eligible"])

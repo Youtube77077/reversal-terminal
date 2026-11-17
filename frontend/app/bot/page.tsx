@@ -208,10 +208,18 @@ function Bot() {
 
       <Sheet open={sheet === "strat"} onClose={() => setSheet(null)} title="Strategy">
         {(strategies || []).map((s) => (
-          <button key={s.key} onClick={() => { setStrat(s.key); setSheet(null); }} className="flex w-full items-start gap-3 border-b border-line py-3 text-left last:border-0">
+          <button key={s.key} onClick={() => { if (strat === s.key) setSheet(null); setStrat(s.key); }} className="flex w-full items-start gap-3 border-b border-line py-3 text-left last:border-0">
             <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-panel text-[15px] font-black">{s.key}</span>
-            <span className="min-w-0 flex-1"><span className="block text-[16px] font-semibold">{s.name}</span>
-              <span className="block text-[13px] leading-snug text-dim">{s.description}</span></span>
+            <span className="min-w-0 flex-1"><span className="flex items-center gap-2 text-[16px] font-semibold">{s.name}
+                <span className={clsx("rounded-full px-2 py-0.5 text-[10px] font-bold uppercase", s.docs?.side === "favourite" ? "bg-info/15 text-info" : "bg-warn/15 text-warn")}>
+                  buys {s.docs?.side === "favourite" ? "favourite" : "underdog"}</span></span>
+              <span className="block text-[13px] leading-snug text-dim">{s.docs?.summary || s.description}</span>
+              {s.key === strat && s.docs?.how && (
+                <span className="mt-2 block space-y-1 rounded-2xl bg-panel p-3 text-[12.5px] text-dim animate-fade">
+                  {s.docs.how.map((h: string, i: number) => <span key={i} className="block">• {h}</span>)}
+                  <span className="block pt-1 text-ink">Idea: {s.docs.idea}</span>
+                  <span className="block text-warn">Risk: {s.docs.risk}</span>
+                </span>)}</span>
             {s.key === strat && <Check size={18} className="mt-2 text-accent" />}
           </button>
         ))}

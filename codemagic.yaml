@@ -1,0 +1,37 @@
+# Codemagic (free tier: 500 macOS build minutes / month) — builds the unsigned Reversal.ipa.
+# Sign in at codemagic.io with GitHub, add this repository, pick the "ios-unsigned" workflow, Start build.
+# Download Reversal.ipa from the build's Artifacts and open it with your sideloading app (it re-signs).
+workflows:
+  ios-unsigned:
+    name: Reversal iPhone app (unsigned IPA)
+    instance_type: mac_mini_m2
+    max_build_duration: 30
+    triggering:
+      events: [push]
+      branch_patterns:
+        - pattern: main
+      when:
+        changeset:
+          includes: ["ios/**"]
+    scripts:
+      - name: Install XcodeGen
+        script: brew install xcodegen
+      - name: Generate project
+        script: |
+          cd ios
+          sed -i '' "s/CURRENT_PROJECT_VERSION: \"1\"/CURRENT_PROJECT_VERSION: \"${BUILD_NUMBER:-1}\"/" project.yml
+          xcodegen generate
+      - name: Build unsigned app
+        script: |
+          cd ios
+          xcodebuild -project Reversal.xcodeproj -scheme Reversal -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+      - name: Package IPA
+        script: |
+          cd ios
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/Reversal.app Payload/
+          zip -qry Reversal.ipa Payload
+    artifacts:
+      - ios/Reversal.ipa

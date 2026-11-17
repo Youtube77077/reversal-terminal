@@ -38,9 +38,9 @@
   --down: 225 40 35;
   --warn: 200 120 0;
   --info: 0 110 230;
-  --accent: 0 190 65;
-  --cash: 0 214 75;
-  --oncash: 0 0 0;
+  --accent: 0 170 60;
+  --cash: 0 186 66;
+  --oncash: 255 255 255;
   color-scheme: light;
 }
 
@@ -73,3 +73,11 @@ html, body {
 
 input[type="range"] { accent-color: rgb(var(--accent)); }
 button, a { -webkit-user-select: none; user-select: none; }
+
+/* bank card */
+.card-shine { position: absolute; inset: 0; background: linear-gradient(115deg, transparent 30%, rgba(255,255,255,.28) 45%, transparent 60%);
+  background-size: 250% 100%; animation: shine 4.5s ease-in-out infinite; mix-blend-mode: overlay; pointer-events: none; }
+@keyframes shine { 0% { background-position: 140% 0; } 60%, 100% { background-position: -40% 0; } }
+.card-tilt { transition: transform .35s cubic-bezier(.2,.8,.2,1), box-shadow .35s; transform-style: preserve-3d; }
+@keyframes livepulse { 0%,100% { opacity: 1 } 50% { opacity: .55 } }
+.live-pulse { animation: livepulse 1.6s ease-in-out infinite; }

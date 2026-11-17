@@ -12,7 +12,7 @@ import { useLive } from "@/lib/live";
 import { isNativeApp, useTheme } from "@/lib/theme";
 
 const TABS = [
-  { href: "/", label: "Money", icon: Wallet },
+  { href: "/", label: "Home", icon: Wallet },
   { href: "/markets", label: "Markets", icon: LineChart },
   { href: "/bot", label: "Bot", icon: CircleDollarSign },
   { href: "/activity", label: "Activity", icon: Clock },
@@ -33,7 +33,7 @@ export const MORE = [
 ];
 
 const TITLES: Record<string, string> = {
-  "/": "Money", "/markets": "Markets", "/bot": "", "/activity": "Activity", "/analytics": "Analytics",
+  "/": "Home", "/markets": "Markets", "/bot": "", "/activity": "Activity", "/analytics": "Analytics",
   ...Object.fromEntries(MORE.map((m) => [m.href, m.label])),
 };
 
@@ -105,7 +105,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
       </aside>
 
       {/* ---------------- mobile header ---------------- */}
-      <header className={clsx("safe-top sticky top-0 z-30 lg:hidden", onBot ? "bg-cash" : "bg-bg/85 backdrop-blur-xl")}>
+      <header className={clsx("safe-top sticky z-30 lg:hidden", live ? "top-6" : "top-0", onBot ? "bg-cash" : "bg-bg/85 backdrop-blur-xl")}>
         <div className="flex items-center gap-3 px-5 pb-2 pt-3">
           <h1 className={clsx("title-xl min-w-0 flex-1 truncate", onBot && "text-oncash")}>{title}</h1>
           <button onClick={toggle} aria-label="Toggle theme"
@@ -121,7 +121,12 @@ export default function Shell({ children }: { children: React.ReactNode }) {
         </div>
       </header>
 
-      <main className="lg:pl-[248px]">
+      {live && (
+        <Link href="/live" className={clsx("fixed left-0 right-0 z-[45] flex items-center justify-center gap-2 bg-down py-1 text-[12px] font-bold text-white lg:left-[248px]", "top-0")}>
+          <span className="h-2 w-2 rounded-full bg-white live-pulse" />LIVE TRADING ON — REAL MONEY
+        </Link>
+      )}
+      <main className={clsx("lg:pl-[248px]", live && "pt-6")}>
         {title && norm !== "/" && <h1 className="title-xl mx-auto hidden max-w-[1600px] px-8 pt-8 lg:block">{title}</h1>}
         {children}
       </main>

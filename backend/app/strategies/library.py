@@ -57,7 +57,19 @@ STRATEGIES: dict[str, dict] = {
                                            "reversal statistics.",
           "params": {"min_fav_prob": 0.90, "max_dist_bps": 5.0, "min_liquidity_usd": 5.0, "max_spread": 0.03,
                      "require_momentum": True, "min_edge": 0.0, "min_sample": 30, "max_price": 0.10}},
+    "K": {"name": "Favourite Carry", "description": "Buy the favourite late when it is very likely to win and the price "
+                                                    "is clearly away from the line.",
+          "params": {"stake_usd": 5.0, "min_fav_prob": 0.95, "min_price": 0.90, "max_price": 0.98, "min_dist_bps": 2.0,
+                     "min_liquidity_usd": 5.0}},
+    "L": {"name": "Trend Rider", "description": "Buy the favourite mid-window (T-90..T-30) when 30 s momentum agrees.",
+          "params": {"stake_usd": 5.0, "entry_min_secs": 30.0, "entry_max_secs": 90.0, "min_fav_prob": 0.80, "max_fav_prob": 0.95,
+                     "min_price": 0.75, "max_price": 0.95, "momentum_horizon": "mom_30s", "min_momentum_bps": 1.0}},
+    "M": {"name": "Statistical Favourite", "description": "Buy the favourite only when its historical win rate "
+                                                          "(pessimistic 95% bound) beats price + fee.",
+          "params": {"stake_usd": 5.0, "min_price": 0.85, "max_price": 0.99, "min_edge": 0.0, "min_sample": 50, "use_lower_ci": True}},
 }
+
+FAVOURITE_KEYS = {"K", "L", "M"}
 
 
 def default_params(key: str) -> dict:
@@ -103,6 +115,8 @@ def evaluate(key: str, st: MarketState, params: dict, ctx: StrategyContext) -> t
     """Return (decision, None) to trade, or (None, reason) when conditions are not met."""
     p = {**default_params(key), **(params or {})}
     secs = st.secs_remaining
+    if key in FAVOURITE_KEYS:
+        return _evaluate_favourite(key, st, p, ctx)
     if key == "F":
         t = float(p["entry_t"])
         if abs(secs - t) > 0.5:
@@ -202,4 +216,69 @@ def evaluate(key: str, st: MarketState, params: dict, ctx: StrategyContext) -> t
         exp["hist_win_prob"] = pw
         exp["expected_value"] = pw * (shares - cost) - (1 - pw) * cost
     return Decision(side=dog, limit_price=limit, shares=shares, order_type=p["order_type"], tif=p["tif"],
+                    decision_ask=ask, reasons=reasons, expected=exp), None
+
+
+def _evaluate_favourite(key: str, st: MarketState, p: dict, ctx: StrategyContext) -> tuple[Decision | None, str | None]:
+    """Strategies K/L/M buy the FAVOURITE (expensive side) instead of the underdog."""
+    secs = st.secs_remaining
+    if not (p["entry_min_secs"] <= secs <= p["entry_max_secs"]):
+        return None, "outside entry window"
+    if not st.book_ok:
+        return None, "book not synced"
+    fav, dog = st.favourite, st.underdog
+    if fav is None:
+        return None, "no favourite"
+    ask = st.ask(fav)
+    if ask is None:
+        return None, "favourite has no asks"
+    if ask > p["max_price"] + 1e-12 or ask < p.get("min_price", 0.0) - 1e-12:
+        return None, f"favourite ask {ask} outside [{p.get('min_price', 0)}, {p['max_price']}]"
+    fav_prob = st.fav_prob or 0.0
+    if fav_prob < p.get("min_fav_prob", 0.0):
+        return None, f"favourite prob {fav_prob:.3f} < {p.get('min_fav_prob')}"
+    if "max_fav_prob" in p and fav_prob > p["max_fav_prob"]:
+        return None, f"favourite prob {fav_prob:.3f} > {p['max_fav_prob']}"
+    tick = st.tick_size or 0.01
+    limit = _round_tick(min(0.99, ask + p["limit_offset_ticks"] * tick), tick)
+    shares = size_order(p["stake_usd"], limit, st.min_order_size)
+    liq = st.ask_liquidity_usd(fav, max_price=limit)
+    dist = st.dist_bps
+    reasons = {"fav": fav, "fav_prob": fav_prob, "side": "favourite", "fav_ask": ask, "limit": limit, "liq_usd": liq,
+               "spread": st.spread(fav), "dist_bps": dist, "secs_remaining": secs}
+    if key == "K":
+        if dist is None or abs(dist) < p["min_dist_bps"]:
+            return None, f"too close to the line ({dist} bp)"
+        if liq < p["min_liquidity_usd"]:
+            return None, f"liquidity ${liq:.2f} < ${p['min_liquidity_usd']}"
+    if key == "L":
+        m = st.features.get(p["momentum_horizon"])
+        if m is None or not st.open_price:
+            return None, "no momentum data"
+        m_bps = m / st.open_price * 1e4
+        agrees = (m_bps > 0) if fav == "UP" else (m_bps < 0)
+        if not agrees or abs(m_bps) < p["min_momentum_bps"]:
+            return None, f"momentum {m_bps:.2f}bp does not confirm the favourite"
+        reasons["momentum_bps"] = m_bps
+    fee_ps = taker_fee(shares, limit, st.fee) / shares if shares else 0.0
+    breakeven = limit + fee_ps
+    reasons["breakeven"] = breakeven
+    exp = {"max_cost": shares * breakeven, "payout_if_win": shares, "net_if_win": shares - shares * breakeven,
+           "net_if_loss": -shares * breakeven, "breakeven_prob": breakeven}
+    if ctx.hist_lookup:
+        dog_px = st.ask(dog) if dog and st.ask(dog) is not None else max(0.001, 1 - ask)
+        k, n = ctx.hist_lookup(st.asset, nearest_checkpoint(secs), dog_px)
+        reasons["hist_fav_wins"], reasons["hist_n"] = n - k, n
+        if n:
+            pw = (n - k) / n
+            exp["hist_win_prob"] = pw
+            exp["expected_value"] = pw * exp["net_if_win"] + (1 - pw) * exp["net_if_loss"]
+        if key == "M":
+            if n < p["min_sample"]:
+                return None, f"historical sample {n} < {p['min_sample']}"
+            lo, _ = wilson_interval(n - k, n)
+            p_hat = (lo if p.get("use_lower_ci", True) else (n - k) / n) or 0.0
+            if p_hat - breakeven < p["min_edge"]:
+                return None, f"historical edge {p_hat - breakeven:+.4f} < {p['min_edge']}"
+    return Decision(side=fav, limit_price=limit, shares=shares, order_type=p["order_type"], tif=p["tif"],
                     decision_ask=ask, reasons=reasons, expected=exp), None

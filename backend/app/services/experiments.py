@@ -36,6 +36,16 @@ def seed_strategies_and_accounts(starting_balance: float = 20.0) -> None:
                 row.default_params_json = json.dumps(default_params(k))
         s.flush()
         if s.scalar(select(func.count()).select_from(Account)):
+            have = set(s.scalars(select(Account.strategy_key)).all())
+            for k, meta in STRATEGIES.items():
+                if k not in have:
+                    rk = {**DEFAULT_RISK, "max_investment_per_trade": 6.0, "max_total_exposure": 30.0}                         if k in ("K", "L", "M") else DEFAULT_RISK
+                    a = Account(name=f"{k} · {meta['name']}", strategy_key=k, params_json="{}",
+                                risk_json=json.dumps(rk), initial_balance=starting_balance,
+                                cash=starting_balance, reserved=0.0, peak_equity=starting_balance, created_ts=now_ms())
+                    s.add(a)
+                    s.flush()
+                    accounting._ledger(s, a, "initial", starting_balance, None, "initial virtual balance", manual=True)
             return
         specs: list[tuple[str, str, dict]] = []
         for k, meta in STRATEGIES.items():

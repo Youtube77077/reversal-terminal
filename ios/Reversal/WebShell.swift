@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import WebKit
 
 /// Full-screen native shell around the Reversal web app. The web UI is mobile-first
@@ -171,8 +172,10 @@ struct WebView: UIViewRepresentable {
         private func share(url: URL, webView: WKWebView) {
             webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
                 var req = URLRequest(url: url)
-                HTTPCookie.requestHeaderFields(with: cookies.filter { url.host?.hasSuffix($0.domain.trimmingCharacters(in: CharacterSet(charactersIn: "."))) ?? false })
-                    .forEach { req.setValue($1, forHTTPHeaderField: $0) }
+                let mine = cookies.filter { c in url.host?.hasSuffix(c.domain.trimmingCharacters(in: CharacterSet(charactersIn: "."))) ?? false }
+                for (name, value) in HTTPCookie.requestHeaderFields(with: mine) {
+                    req.setValue(value, forHTTPHeaderField: name)
+                }
                 URLSession.shared.downloadTask(with: req) { tmp, resp, _ in
                     guard let tmp else { return }
                     let name = resp?.suggestedFilename ?? url.lastPathComponent

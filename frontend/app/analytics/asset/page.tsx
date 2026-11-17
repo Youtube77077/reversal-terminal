@@ -3,6 +3,7 @@ import { useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 import AssetNav, { Verdict } from "@/components/AssetNav";
 import { RateBars, TimeChart } from "@/components/Chart";
+import { BarChart, XYLines } from "@/components/Charts2";
 import Drill from "@/components/Drill";
 import { DataTable, ErrorNote, Panel, Rate, SectionNote, Stat, Tabs } from "@/components/ui";
 import { usePoll } from "@/lib/api";
@@ -54,6 +55,7 @@ function AssetAnalytics() {
   const A = (asset || "").toUpperCase();
   const { data: d, error } = usePoll<any>(`/api/analytics/asset/${A}`, 20000);
   const { tick } = useLive();
+  const { data: curves } = usePoll<any>("/api/analytics/reversal-curves", 60000);
   const [tab, setTab] = useState("pnl");
   const [drill, setDrill] = useState<any>(null);
   const t = d?.trading || {};
@@ -110,6 +112,11 @@ function AssetAnalytics() {
             {tab === "pnl" && (<>
               <TimeChart title={`${A}_cum_pnl`} height={200} ranges series={[{ name: "cumulative realised P&L", color: "#a3e635", type: "area",
                 data: d.equity_curve.map((p: any) => ({ time: p.ts, value: p.cum_pnl })) }]} />
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+                <div className="rounded-3xl bg-panel2/50 p-4"><BarChart label="Profit by entry price" data={d.pnl_by_entry_price.map((r: any) => ({ x: r.group, v: r.net_pnl, n: r.trades }))} sub={(r) => `${r.n} trades`} /></div>
+                <div className="rounded-3xl bg-panel2/50 p-4"><BarChart label="Profit by entry time" data={d.pnl_by_entry_time.map((r: any) => ({ x: r.group.replace("T-", ""), v: r.net_pnl, n: r.trades }))} sub={(r) => `${r.n} trades`} /></div>
+                <div className="rounded-3xl bg-panel2/50 p-4"><BarChart label="Profit by hour (UTC)" data={d.pnl_by_hour_utc.map((r: any) => ({ x: r.group, v: r.net_pnl, n: r.trades }))} sub={(r) => `${r.n} trades`} /></div>
+              </div>
               <div className="label">By entry price</div><DataTable exportName={`${A}_pnl_by_price`} rows={d.pnl_by_entry_price} cols={pnlCols("Entry price")} />
               <div className="label">By entry time remaining</div><DataTable exportName={`${A}_pnl_by_time`} rows={d.pnl_by_entry_time} cols={pnlCols("Entry window")} />
               <div className="label">By favourite probability at entry</div><DataTable exportName={`${A}_pnl_by_prob`} rows={d.pnl_by_fav_prob} cols={pnlCols("Fav prob")} />
@@ -139,6 +146,10 @@ function AssetAnalytics() {
               ]} />
             </>)}
             {tab === "intervals" && (<>
+              {curves?.assets?.[A] && <XYLines xs={[120, 90, 60, 45, 30, 20, 15, 10, 7, 5, 3, 2, 1]} xLabel={(t) => `T-${t}`} series={[
+                { name: A, values: curves.assets[A].map((r: any) => r.rate), n: curves.assets[A].map((r: any) => r.n), color: "#00d64b" },
+                { name: "All markets", values: curves.all.map((r: any) => r.rate), n: curves.all.map((r: any) => r.n), color: "#8e8e93" },
+              ]} />}
               <RateBars label={`${A} probability-reversal rate by checkpoint`} rows={d.intervals.map((r: any) => ({ x: `T-${r.t_minus}`, rate: r.reversal_rate ?? null, lo: r.reversal_ci_low, hi: r.reversal_ci_high, n: r.resolved }))} />
               <DataTable exportName={`${A}_intervals`} rows={d.intervals} cols={researchCols("t_minus", "Interval")} onRow={(r) => setDrill({ asset: A, t_minus: r.t_minus })} rowClass={(r) => (r.key ? "bg-accent/5" : undefined)} />
             </>)}

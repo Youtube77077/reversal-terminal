@@ -29,8 +29,9 @@ class PolymarketLiveAdapter(ExecutionAdapter):
         return {"Authorization": f"Bearer {self.settings.executor_token}"}
 
     def available(self) -> tuple[bool, str]:
-        if not self.settings.live_trading_enabled:
-            return False, "LIVE_TRADING_ENABLED is false"
+        from .switch import live_enabled
+        if not live_enabled():
+            return False, "live trading switch is off"
         return True, "live adapter configured (executor health checked per order)"
 
     async def balance(self) -> float | None:

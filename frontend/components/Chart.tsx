@@ -2,6 +2,13 @@
 import { Download } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createChart, ColorType, IChartApi, ISeriesApi, LineStyle, UTCTimestamp } from "lightweight-charts";
+import { useTheme } from "@/lib/theme";
+
+const cssColor = (name: string, fallback: string) => {
+  if (typeof window === "undefined") return fallback;
+  const v = getComputedStyle(document.documentElement).getPropertyValue(`--${name}`).trim();
+  return v ? `rgb(${v.split(/\s+/).join(",")})` : fallback;
+};
 
 export type SeriesDef = {
   name: string;
@@ -24,16 +31,17 @@ export function TimeChart({ series, height = 260, markers, title, ranges, cursor
   const refs = useRef<Record<string, ISeriesApi<any>>>({});
   const [range, setRange] = useState<number | null>(null);
   const [hover, setHover] = useState<Record<string, number> | null>(null);
+  const { theme } = useTheme();
 
   useEffect(() => {
     if (!el.current) return;
     const c = createChart(el.current, {
       height,
-      layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: "#8a929d", fontSize: 10, fontFamily: "var(--font-mono)" },
-      grid: { vertLines: { color: "#1a1d22" }, horzLines: { color: "#1a1d22" } },
-      rightPriceScale: { borderColor: "#22252b", visible: true },
-      leftPriceScale: { borderColor: "#22252b", visible: series.some((s) => s.priceScale === "left") },
-      timeScale: { borderColor: "#22252b", timeVisible: true, secondsVisible: true },
+      layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: cssColor("faint", "#8a929d"), fontSize: 11, fontFamily: "var(--font-sans)" },
+      grid: { vertLines: { visible: false }, horzLines: { color: cssColor("line", "#1a1d22") } },
+      rightPriceScale: { borderVisible: false, visible: true },
+      leftPriceScale: { borderVisible: false, visible: series.some((s) => s.priceScale === "left") },
+      timeScale: { borderVisible: false, timeVisible: true, secondsVisible: true },
       crosshair: { mode: 0 },
       localization: { timeFormatter: (t: number) => new Date(t * 1000).toLocaleTimeString(undefined, { hour12: false }) },
       autoSize: true,
@@ -50,7 +58,7 @@ export function TimeChart({ series, height = 260, markers, title, ranges, cursor
     });
     return () => { c.remove(); chart.current = null; refs.current = {}; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [height]);
+  }, [height, theme]);
 
   useEffect(() => {
     const c = chart.current;
@@ -85,7 +93,7 @@ export function TimeChart({ series, height = 260, markers, title, ranges, cursor
       const max = Math.max(...all);
       if (isFinite(max)) c.timeScale().setVisibleRange({ from: Math.floor((max - range) / 1000) as UTCTimestamp, to: Math.floor(max / 1000) as UTCTimestamp });
     } else if (fit) c.timeScale().fitContent();
-  }, [series, markers, range, fit]);
+  }, [series, markers, range, fit, theme]);
 
   useEffect(() => {
     const c = chart.current;

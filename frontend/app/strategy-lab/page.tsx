@@ -10,7 +10,7 @@ export default function StrategyLab() {
   return (
     <div className="page space-y-3">
       <Tabs value={tab} onChange={setTab} tabs={[{ key: "compare", label: "Strategy comparison" }, { key: "backtest", label: "Backtester" },
-        { key: "calculator", label: "Profitability calculator" }, { key: "historical", label: "Historical data" }, { key: "catalog", label: "Strategy catalog" }]} />
+        { key: "calculator", label: "Profitability calculator" }, { key: "historical", label: "Historical data" }, { key: "catalog", label: "What each strategy does" }]} />
       {tab === "compare" && <Compare />}
       {tab === "backtest" && <Backtest />}
       {tab === "calculator" && <Calculator />}
@@ -191,8 +191,16 @@ function Catalog() {
   return (
     <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
       {(data || []).map((s) => (
-        <Panel key={s.key} title={`${s.key} · ${s.name}`} sub={s.description}>
-          <pre className="mono max-h-48 overflow-auto text-2xs text-dim">{JSON.stringify(s.default_params, null, 1)}</pre>
+        <Panel key={s.key} title={`${s.key} · ${s.name}`} sub={s.docs?.summary || s.description}
+          right={<span className={`rounded-full px-2.5 py-1 text-[11px] font-bold uppercase ${s.docs?.side === "favourite" ? "bg-info/15 text-info" : "bg-warn/15 text-warn"}`}>buys {s.docs?.side || "underdog"}</span>}>
+          {s.docs?.how && <ol className="mb-3 list-decimal space-y-1 pl-5 text-[13px] text-dim">{s.docs.how.map((h: string, i: number) => <li key={i}>{h}</li>)}</ol>}
+          {s.docs?.idea && <p className="text-[13px]"><b>Idea:</b> <span className="text-dim">{s.docs.idea}</span></p>}
+          {s.docs?.risk && <p className="mt-1 text-[13px] text-warn"><b>Risk:</b> {s.docs.risk}</p>}
+          <div className="mt-3 space-y-1.5 border-t border-line pt-3">
+            {Object.entries(s.default_params).map(([k, v]) => (
+              <div key={k} className="flex gap-2 text-[12px]"><span className="mono shrink-0 font-semibold">{k}={JSON.stringify(v)}</span>
+                <span className="text-faint">{s.param_docs?.[k] || ""}</span></div>))}
+          </div>
         </Panel>
       ))}
     </div>

@@ -307,9 +307,12 @@ def transaction_detail(txid: str):
 @router.get("/strategies")
 def strategies():
     with session_scope() as s:
-        rows = s.scalars(select(Strategy)).all()
+        from ..strategies.docs import PARAM_DOCS, STRATEGY_DOCS
+        rows = s.scalars(select(Strategy).order_by(Strategy.key)).all()
         return [{"key": r.key, "name": r.name, "description": r.description,
-                 "default_params": json.loads(r.default_params_json)} for r in rows]
+                 "default_params": json.loads(r.default_params_json), "docs": STRATEGY_DOCS.get(r.key, {}),
+                 "param_docs": {k: PARAM_DOCS[k] for k in json.loads(r.default_params_json) if k in PARAM_DOCS}}
+                for r in rows]
 
 
 @router.get("/strategies/compare")
@@ -586,3 +589,112 @@ def live_account(body: LiveAccountIn):
         s.add(a)
         s.flush()
         return _acct_dict(s, a)
+
+
+# ================================================================ credentials, live switch, reset
+def _check_password(password: str | None, confirm: str | None = None) -> None:
+    import hmac
+    from ..config import get_settings
+    pw = get_settings().app_password
+    if pw:
+        if not password or not hmac.compare_digest(password.encode(), pw.encode()):
+            raise HTTPException(403, "wrong password")
+    elif (confirm or "").strip().upper() not in ("CONFIRM", "RESET"):
+        raise HTTPException(400, "type CONFIRM to proceed (no app password is set)")
+
+
+class CredentialsIn(BaseModel):
+    password: str = ""
+    confirm: str = ""
+    private_key: str = ""
+    wallet_address: str = ""
+    relayer_key: str = ""
+    relayer_address: str = ""
+    builder_key: str = ""
+    builder_secret: str = ""
+    builder_passphrase: str = ""
+
+
+@router.get("/live/credentials")
+def live_credentials_get():
+    from ..services import credentials
+    return credentials.masked()
+
+
+@router.put("/live/credentials")
+async def live_credentials_put(body: CredentialsIn):
+    from ..execution.eligibility import check_eligibility
+    from ..execution.switch import live_enabled
+    from ..services import credentials
+    from ..services.events import record_event
+    _check_password(body.password, body.confirm)
+    try:
+        credentials.save(body.model_dump(exclude={"password", "confirm"}))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    res = await credentials.push_to_executor(live_enabled())
+    await check_eligibility(force=True)
+    record_event("experiment", "Polymarket API credentials saved (encrypted)", level="WARNING")
+    return {"saved": True, "masked": credentials.masked(), "executor": res}
+
+
+class PasswordIn(BaseModel):
+    password: str = ""
+    confirm: str = ""
+
+
+@router.post("/live/credentials/delete")
+async def live_credentials_delete(body: PasswordIn):
+    from ..services import credentials
+    from ..services import app_settings
+    _check_password(body.password, body.confirm)
+    credentials.delete()
+    app_settings.update({"live_armed": False})
+    if _eng():
+        _eng().live_armed = False
+    await credentials.push_to_executor(False)
+    return {"deleted": True}
+
+
+class SwitchIn(BaseModel):
+    password: str = ""
+    confirm: str = ""
+    enabled: bool = False
+
+
+@router.post("/live/switch")
+async def live_switch(body: SwitchIn):
+    from ..execution.eligibility import check_eligibility
+    from ..services import app_settings, credentials
+    from ..services.events import record_event
+    _check_password(body.password, body.confirm)
+    app_settings.update({"live_enabled": bool(body.enabled)})
+    if not body.enabled:
+        app_settings.update({"live_armed": False})
+        if _eng():
+            _eng().live_armed = False
+    from ..execution.switch import live_enabled
+    res = await credentials.push_to_executor(live_enabled())
+    await check_eligibility(force=True)
+    record_event("experiment", f"Live trading switch turned {'ON' if body.enabled else 'OFF'}", level="WARNING")
+    return {"enabled": live_enabled(), "executor": res}
+
+
+class ResetIn(BaseModel):
+    password: str = ""
+    confirm: str = ""
+    paper: bool = False
+    live: bool = False
+    research: bool = False
+    starting_balance: float = 20.0
+
+
+@router.post("/admin/reset")
+async def admin_reset(body: ResetIn):
+    import asyncio
+    from ..services.reset import reset
+    _check_password(body.password, body.confirm)
+    try:
+        return await asyncio.to_thread(reset, body.paper, body.live, body.research, body.starting_balance)
+    except ValueError as e:
+        raise HTTPException(400, str(e))

@@ -12,7 +12,7 @@
 // EXECUTOR_MAX_ORDER_USD; BUY-only price-capped limit orders whose remainder is cancelled.
 
 import http from "node:http";
-import { createSecureClient, OrderSide } from "@polymarket/client";
+import { createSecureClient, OrderSide, relayerApiKey } from "@polymarket/client";
 import { prepareGaslessTransaction } from "@polymarket/client/actions";
 import { privateKey } from "@polymarket/client/viem";
 import { builderApiKey } from "@polymarket/client/node";
@@ -23,7 +23,8 @@ const env = (k, ...alts) => [k, ...alts].map((x) => process.env[x]).find((v) => 
 const PORT = Number(env("EXECUTOR_PORT") || 8787);
 const HOST = env("EXECUTOR_HOST") || "127.0.0.1";
 const TOKEN = env("EXECUTOR_TOKEN");
-const LIVE = env("LIVE_TRADING_ENABLED").toLowerCase() === "true";
+const ENV_LIVE = env("LIVE_TRADING_ENABLED").toLowerCase() === "true";
+let LIVE = ENV_LIVE;            // may also be switched on/off by the backend via /configure
 const MAX_ORDER_USD = Number(env("EXECUTOR_MAX_ORDER_USD", "LIVE_MAX_ORDER_USD") || 5);
 const RPC = env("POLYGON_RPC") || "https://polygon-bor-rpc.publicnode.com";
 
@@ -37,7 +38,8 @@ const ERC20 = parseAbi(["function approve(address spender, uint256 amount) retur
 const RAMP = parseAbi(["function wrap(address _asset, address _to, uint256 _amount)"]);
 const CTF = parseAbi(["function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets)"]);
 
-const state = { ready: false, error: null, wallet: null, startedAt: Date.now(), orders: 0, rejects: 0 };
+const state = { ready: false, error: null, wallet: null, walletType: null, gasless: false, source: null,
+  startedAt: Date.now(), orders: 0, rejects: 0 };
 let secure = null;
 let signer = null;
 const pub = createPublicClient({ chain: polygon, transport: viemHttp(RPC) });
@@ -45,33 +47,55 @@ const redeemed = new Set();
 
 function log(...a) { console.log(new Date().toISOString(), "[executor]", ...a); }
 
-async function init() {
+function envCreds() {
   const pk = env("POLYMARKET_PRIVATE_KEY", "PRIVATE_KEY");
-  const bk = env("POLYMARKET_BUILDER_KEY", "BUILDER_KEY");
-  const bs = env("POLYMARKET_BUILDER_SECRET", "BUILDER_SECRET");
-  const bp = env("POLYMARKET_BUILDER_PASSPHRASE", "BUILDER_PASSPHRASE");
-  if (!pk || !bk || !bs || !bp) {
-    state.error = "credentials not configured (POLYMARKET_PRIVATE_KEY + POLYMARKET_BUILDER_KEY/SECRET/PASSPHRASE)";
+  if (!pk) return null;
+  return {
+    private_key: pk, wallet_address: env("POLYMARKET_WALLET_ADDRESS", "POLY_FUNDER_ADDRESS"),
+    relayer_key: env("POLYMARKET_RELAYER_KEY"), relayer_address: env("POLYMARKET_RELAYER_ADDRESS"),
+    builder_key: env("POLYMARKET_BUILDER_KEY", "BUILDER_KEY"), builder_secret: env("POLYMARKET_BUILDER_SECRET", "BUILDER_SECRET"),
+    builder_passphrase: env("POLYMARKET_BUILDER_PASSPHRASE", "BUILDER_PASSPHRASE"),
+  };
+}
+
+let initTimer = null;
+async function init(creds, source) {
+  clearTimeout(initTimer);
+  secure = null; signer = null;
+  Object.assign(state, { ready: false, wallet: null, walletType: null, gasless: false, source: source || null });
+  if (!creds || !creds.private_key) {
+    state.error = "no Polymarket keys yet — add them in the app (Live trading → API keys)";
     log(state.error);
     return;
   }
-  if (!pk.startsWith("0x") || pk.length !== 66) {
-    state.error = "POLYMARKET_PRIVATE_KEY must be a 0x-prefixed 32-byte hex key";
-    log(state.error);
-    return;
-  }
+  let pk = String(creds.private_key).trim();
+  if (!pk.startsWith("0x")) pk = "0x" + pk;
+  if (!/^0x[0-9a-fA-F]{64}$/.test(pk)) { state.error = "private key must be 64 hex characters"; log(state.error); return; }
   try {
     signer = privateKey(pk);
-    secure = await createSecureClient({ signer, apiKey: builderApiKey({ key: bk, secret: bs, passphrase: bp }) });
-    state.wallet = secure.account?.wallet ?? null;
-    try { const h = await secure.setupTradingApprovals(); if (h?.wait) await h.wait(); } catch { /* already set */ }
+    let apiKey;
+    if (creds.relayer_key) {
+      apiKey = relayerApiKey({ key: creds.relayer_key, address: creds.relayer_address || creds.wallet_address || (await signer.getAddress()) });
+    } else if (creds.builder_key && creds.builder_secret && creds.builder_passphrase) {
+      apiKey = builderApiKey({ key: creds.builder_key, secret: creds.builder_secret, passphrase: creds.builder_passphrase });
+    }
+    const opts = { signer };
+    if (apiKey) opts.apiKey = apiKey;
+    if (creds.wallet_address) opts.wallet = creds.wallet_address;
+    secure = await createSecureClient(opts);
+    state.wallet = secure.account?.wallet ?? creds.wallet_address ?? null;
+    state.walletType = secure.account?.walletType ?? null;
+    state.gasless = !!apiKey;
+    if (apiKey) {
+      try { const h = await secure.setupTradingApprovals(); if (h?.wait) await h.wait(); } catch { /* already set */ }
+    }
     state.ready = true;
     state.error = null;
-    log("ready; deposit wallet", state.wallet, "live orders", LIVE ? "ENABLED" : "disabled");
+    log("ready; wallet", state.wallet, "type", state.walletType, "gasless", state.gasless, "live", LIVE ? "ENABLED" : "off");
   } catch (e) {
-    state.error = `init failed: ${e?.message ?? e}`;
+    state.error = `could not connect to Polymarket with these keys: ${e?.message ?? e}`;
     log(state.error);
-    setTimeout(init, 30_000);
+    initTimer = setTimeout(() => init(creds, source), 60_000);
   }
 }
 
@@ -142,6 +166,7 @@ async function runGasless(calls, metadata) {
 
 async function redeem(conditionId) {
   if (!state.ready) return { ok: false, error: "executor not ready" };
+  if (!state.gasless) return { ok: false, error: "automatic redemption needs a Relayer or Builder API key; redeem on polymarket.com instead" };
   if (!/^0x[0-9a-fA-F]{64}$/.test(conditionId || "")) return { ok: false, error: "invalid conditionId" };
   if (redeemed.has(conditionId)) return { ok: true, note: "already redeemed" };
   let last;
@@ -188,12 +213,22 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
   try {
     if (req.method === "GET" && url.pathname === "/health") {
-      return send(res, 200, { ok: state.ready, liveEnabled: LIVE, wallet: state.wallet, error: state.error,
+      return send(res, 200, { ok: state.ready, liveEnabled: LIVE, wallet: state.wallet, walletType: state.walletType,
+        gasless: state.gasless, source: state.source, error: state.error,
         maxOrderUsd: MAX_ORDER_USD, orders: state.orders, rejects: state.rejects, uptimeS: (Date.now() - state.startedAt) / 1000 });
     }
     if (req.method === "GET" && url.pathname === "/balance") {
       if (!state.ready) return send(res, 503, { ok: false, error: state.error });
       return send(res, 200, { ok: true, usdc: await usdcBalance(), wallet: state.wallet });
+    }
+    if (req.method === "POST" && url.pathname === "/configure") {
+      const b = await readBody(req);
+      LIVE = ENV_LIVE || !!b.liveEnabled;
+      const env = envCreds();
+      if (env) await init(env, "environment");                 // server env takes precedence
+      else if (b.credentials) await init(b.credentials, "app");
+      else await init(null, null);
+      return send(res, 200, { ok: state.ready, liveEnabled: LIVE, wallet: state.wallet, gasless: state.gasless, error: state.error });
     }
     if (req.method === "POST" && url.pathname === "/order") return send(res, 200, await placeLimitFak(await readBody(req)));
     if (req.method === "GET" && url.pathname.startsWith("/order/")) {
@@ -214,4 +249,4 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => log(`listening on ${HOST}:${PORT}`));
-init();
+init(envCreds(), envCreds() ? "environment" : null);

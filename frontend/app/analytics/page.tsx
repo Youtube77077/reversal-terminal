@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
-import { RateBars } from "@/components/Chart";
+import { RateBars, TimeChart } from "@/components/Chart";
+import { BarChart, XYLines, seriesColor } from "@/components/Charts2";
 import Drill from "@/components/Drill";
 import AssetNav, { Verdict } from "@/components/AssetNav";
 import Link from "next/link";
@@ -27,6 +28,8 @@ export default function Analytics() {
   const { data: summ } = usePoll<any[]>("/api/analytics/assets-summary", 20000);
   const [minN, setMinN] = useState("30");
   const { data: pmap } = usePoll<any>(`/api/analytics/profit-map${qs({ min_n: minN })}`, 30000);
+  const { data: curves } = usePoll<any>("/api/analytics/reversal-curves", 60000);
+  const { data: ser } = usePoll<any>("/api/analytics/series", 30000);
 
   const rateCols = (k: string, label: string) => [
     { key: k, label, align: "left" as const, render: (r: any) => (k === "t_minus" ? `T-${r.t_minus}` : r[k]) },
@@ -68,6 +71,22 @@ export default function Analytics() {
           { key: "verdict", label: "Verdict", align: "center", render: (r: any) => <Verdict v={r.verdict} /> },
         ]} />
       </Panel>
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <Panel title="Reversal rate by time left — every market" sub="How often the favourite ended up losing, at each second before close. Tap names to hide/show.">
+          {curves?.all ? <XYLines xs={T} xLabel={(t) => `T-${t}`} series={[
+            { name: "All", values: curves.all.map((r: any) => r.rate), n: curves.all.map((r: any) => r.n), color: "#e0e0e0" },
+            ...Object.entries(curves.assets || {}).map(([a, rows]: any, i) => ({ name: a, values: rows.map((r: any) => r.rate), n: rows.map((r: any) => r.n), color: seriesColor(i) })),
+          ]} /> : <div className="text-faint">Loading…</div>}
+        </Panel>
+        <Panel title="Cumulative profit by strategy" sub="Realised P&L over time for each strategy account.">
+          <TimeChart title="pnl_by_strategy" height={240} series={Object.entries(ser?.by_strategy || {}).map(([k, pts]: any, i) => ({
+            name: k, color: seriesColor(i), width: 2, data: pts.map((p: any) => ({ time: p.t, value: p.v })) }))} />
+        </Panel>
+        <Panel title="Profit by market"><BarChart data={(ser?.pnl_by_asset || []).map((d: any) => ({ x: d.x, v: d.pnl, trades: d.trades, wins: d.wins }))} sub={(d) => `${d.trades} trades · ${d.wins} won`} /></Panel>
+        <Panel title="Profit by strategy"><BarChart data={(ser?.pnl_by_strategy || []).map((d: any) => ({ x: d.x, v: d.pnl, trades: d.trades, wins: d.wins }))} sub={(d) => `${d.trades} trades · ${d.wins} won`} /></Panel>
+        <Panel title="Win rate by market"><BarChart money={false} data={(ser?.pnl_by_asset || []).map((d: any) => ({ x: d.x, v: d.win_rate ?? 0, trades: d.trades }))} sub={(d) => `n=${d.trades}`} /></Panel>
+        <Panel title="Profit by hour (last 72h)"><BarChart data={(ser?.hourly || []).slice(-24).map((d: any) => ({ x: new Date(d.t).getHours() + "h", v: d.pnl, trades: d.trades }))} sub={(d) => `${d.trades} trades`} /></Panel>
+      </div>
       <Panel title="Statistical analytics" sub="Resolved observations only · 95% Wilson intervals · each checkpoint is a separate statistic · LIVE experimental data (historical shown separately)"
         right={<>
           <Select value={asset} onChange={setAsset} options={ASSETS.map((x) => ({ value: x, label: x === "ALL" ? "All assets" : x }))} />

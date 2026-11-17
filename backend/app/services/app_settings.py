@@ -13,6 +13,7 @@ DEFAULTS = {
     "operating_mode": "paper",
     "display_timezone": "local",
     "live_armed": False,
+    "live_enabled": False,
     "theme": "dark",
 }
 

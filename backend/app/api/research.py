@@ -142,3 +142,15 @@ async def assets_summary():
 async def profit_map(min_n: int = 0):
     from ..services import asset_analytics
     return await asyncio.to_thread(asset_analytics.profit_map, min_n)
+
+
+@router.get("/analytics/series")
+async def analytics_series(mode: str = "all", account_id: int | None = None):
+    from ..services import charts
+    return await asyncio.to_thread(charts.trading_series, mode, account_id)
+
+
+@router.get("/analytics/reversal-curves")
+async def reversal_curves():
+    from ..services import charts
+    return await asyncio.to_thread(charts.reversal_curves)

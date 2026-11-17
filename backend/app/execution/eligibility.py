@@ -47,10 +47,11 @@ async def check_eligibility(force: bool = False) -> dict:
         geo["error"] = repr(e)
     ex = await executor_health()
     blockers: list[str] = []
-    if not s.live_trading_enabled:
-        blockers.append("LIVE_TRADING_ENABLED is false in the server environment.")
+    from .switch import live_enabled
+    if not live_enabled():
+        blockers.append("Live trading switch is OFF (turn it on in the app, or LIVE_TRADING_ENABLED=true).")
     if not ex.get("ok"):
-        blockers.append(f"Live executor not ready: {ex.get('error') or 'no credentials'}")
+        blockers.append(f"Polymarket keys not connected: {ex.get('error') or 'no credentials'}")
     if not geo["reachable"]:
         blockers.append("Could not verify the server location with Polymarket's geoblock endpoint.")
     elif geo["blocked"] and (geo["country"] or "").upper() not in FRONTEND_ONLY:

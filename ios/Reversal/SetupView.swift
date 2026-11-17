@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import LocalAuthentication
 
 let cashGreen = Color(red: 0, green: 214 / 255, blue: 75 / 255)

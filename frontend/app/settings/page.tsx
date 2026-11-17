@@ -1,6 +1,7 @@
 "use client";
 import { Bell, Database, Download } from "lucide-react";
 import { useEffect, useState } from "react";
+import ResetCard from "@/components/ResetCard";
 import { Button, DataTable, KV, Panel, Pill } from "@/components/ui";
 import { post, put, usePoll } from "@/lib/api";
 import { ts } from "@/lib/format";
@@ -54,6 +55,7 @@ export default function Settings() {
           <div className="mt-3 flex items-center gap-2 text-xs text-dim">Operating mode: <Pill kind="PAPER" /> <span>(live mode is locked by the eligibility check)</span></div>
         </Panel>
       </div>
+      <ResetCard />
       <Panel title="Database" right={<Database size={14} className="text-dim" />}>
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
           <KV rows={[["Path", health?.db?.path], ["Size", `${health?.db?.size_mb ?? "?"} MB (WAL ${health?.db?.wal_mb ?? 0} MB)`], ["Integrity", health?.db?.integrity],

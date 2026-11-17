@@ -9,23 +9,34 @@ Phone/PC browser ─┼─ HTTPS ─▶ Caddy ─▶ Reversal container (web UI 
                                                      └─ Polymarket public data + (optional) live orders
 ```
 
-## 1. Get a server (≈ $5–6 / month)
+## 1. Get a server — free option first
 
-Pick any Ubuntu 24.04 VPS with **1 vCPU / 1–2 GB RAM / 25 GB disk**. Recommended region: **Amsterdam**,
-for example a DigitalOcean "AMS3" droplet, Vultr Amsterdam, or Hetzner. Hosting in the Netherlands keeps orders
-coming from your own jurisdiction: Polymarket's API is not restricted for NL, and it avoids any
-VPN-style routing that their Terms of Use prohibit. Don't pick a US/UK/FR/DE region, because Polymarket
-rejects API orders from those countries.
+### Free: Oracle Cloud "Always Free" (recommended, €0/month)
+1. Sign up at **cloud.oracle.com/free**. A card is needed only for identity verification, and Always Free resources aren't charged.
+   Choose **Home Region: Netherlands Northwest (Amsterdam)**. You can't change this later, and it keeps orders
+   coming from NL, where Polymarket's API isn't restricted.
+2. **Create a VM instance**: Image *Ubuntu 24.04*, Shape *Ampere A1 Flex* (ARM). Up to 4 OCPU / 24 GB is
+   free; 1 OCPU / 6 GB is plenty. Add your SSH key and create it.
+3. **Networking → Virtual Cloud Network → Security List → Add Ingress Rules**: TCP **80** and **443**, source `0.0.0.0/0`.
+4. Note the public IP and continue with step 2 below (user `ubuntu`).
 
-You create the account and pay the provider yourself. Add your SSH key while creating the server.
+### Why not Cloudflare / Vercel / Render free?
+Cloudflare Workers/Pages and Vercel only run short request handlers, but this bot must run nonstop: live
+websockets, a 1-second collector and a database. Render's free tier sleeps after 15 minutes, which would stop the collector.
+Cloudflare **Tunnel** (free) *can* give the server a secure link without opening ports. Run
+`cloudflared tunnel --url http://localhost:8000` on the server for an instant `https://….trycloudflare.com` address.
+
+### Paid alternative (≈ $5–6 / month)
+Any Ubuntu 24.04 VPS with 1 vCPU / 1–2 GB RAM in **Amsterdam** works, for example DigitalOcean AMS3, Vultr Amsterdam or Hetzner. Don't
+pick US/UK/FR/DE regions, because Polymarket rejects API orders from those countries.
 
 ## 2. One-command install
 
 SSH into the server, copy `deploy/setup-server.sh` over (the repo is private), and run it:
 
 ```bash
-scp deploy/setup-server.sh root@SERVER_IP:~
-ssh root@SERVER_IP
+scp deploy/setup-server.sh ubuntu@SERVER_IP:~     # Oracle user is "ubuntu"; other VPS often "root"
+ssh ubuntu@SERVER_IP
 bash setup-server.sh
 ```
 
@@ -37,31 +48,23 @@ Then open `https://<your-domain>` and log in.
 
 ## 3. Where your API keys go
 
-**Only** in the server's `.env` file (`chmod 600`), never in Git, the website, the app or chat:
+**Easiest: in the app.** Website or iPhone app → **More → Live trading → API keys**. The page explains where to
+find each value. Keys are encrypted on the server (AES-256), never shown again, and never stored in Git.
 
-```bash
-ssh root@SERVER_IP
-nano ~/reversal-terminal/.env
-```
+What Polymarket needs (from their docs):
+| Value | Required? | Where to find it |
+|---|---|---|
+| Private key | **yes** | Email/Google account: reveal.magic.link/polymarket → *Export Private Key*. Wallet account: your wallet app → *Show private key* |
+| Wallet address | recommended | polymarket.com → profile picture → the `0x…` address |
+| Relayer API key + address | optional | polymarket.com → Settings → API Keys → Relayer API Keys (enables auto-approvals & auto-redeem) |
+| *or* Builder key/secret/passphrase | optional | polymarket.com/settings?tab=builder (what Polybot used) |
+| Funds | yes | Deposit on polymarket.com; trades use pUSD, at least $1 per order, $10+ recommended |
 
-```
-LIVE_TRADING_ENABLED=true
-POLYMARKET_PRIVATE_KEY=0x...            # wallet key that controls your Polymarket deposit wallet
-POLYMARKET_BUILDER_KEY=...              # polymarket.com → Settings → Builder / API keys
-POLYMARKET_BUILDER_SECRET=...
-POLYMARKET_BUILDER_PASSPHRASE=...
-LIVE_MAX_ORDER_USD=5
-LIVE_MAX_SESSION_BUDGET_USD=100
-```
+The trading API credentials themselves are generated automatically from your private key.
 
-Then restart: `cd ~/reversal-terminal && docker compose --env-file .compose.env up -d`.
-
-These are the same four values Polybot used (`PRIVATE_KEY`, `BUILDER_KEY`, `BUILDER_SECRET`,
-`BUILDER_PASSPHRASE`). Polybot's old `.env` keys are still on your PC; consider rotating them and use fresh
-ones here.
-
-**GitHub Secrets** (repo → Settings → Secrets and variables → Actions): not needed for running the bot. GitHub
-only builds the iPhone app and the server image. Keep trading keys on the server only.
+**Alternative: server env** (`nano ~/reversal-terminal/.env`), with `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_WALLET_ADDRESS`,
+`POLYMARKET_RELAYER_KEY`, `POLYMARKET_RELAYER_ADDRESS` (or the `POLYMARKET_BUILDER_*` trio) and `LIVE_TRADING_ENABLED=true`.
+Server env values take precedence over keys entered in the app.
 
 ## 4. Going live (real money)
 
@@ -78,14 +81,17 @@ Safety layers on every order:
 - The stop loss counts open positions as fully at risk.
 - Disarming or **PAUSE ALL** stops new orders immediately.
 
-## 5. iPhone app
+## 5. iPhone app (.ipa)
 
-- Every push to `main` that changes `ios/` builds **Reversal.ipa** on GitHub: Actions tab, or Releases → latest.
-- On your iPhone, open GitHub (signed in), download the `.ipa` from the latest release, and *Share → open in* your
-  sideloading app (SideStore / AltStore / Feather / ESign / Sideloadly). It re-signs and installs.
-- On first launch, enter `https://<your-domain>` and log in with your password.
-- The app is a native shell around the mobile web UI. UI updates arrive automatically when the server updates,
-  so you only re-sideload for native changes, such as the icon or Face ID.
+iPhone apps can only be compiled with **Xcode on a Mac**. Your PC is Windows, so the build runs on a cloud Mac:
+
+- **GitHub Actions** (`.github/workflows/ios.yml`): runs automatically on every push that changes `ios/`. Private repos
+  need working GitHub billing (Settings → Billing & plans). The `.ipa` then appears under **Releases**.
+- **Codemagic, free** (`codemagic.yaml`): sign in at codemagic.io with GitHub, add the repo, run the
+  **ios-unsigned** workflow, and download `Reversal.ipa` from Artifacts. The free tier includes 500 Mac minutes/month, about 3 min per build.
+
+Install: on your iPhone, open the `.ipa` with your sideloading app (SideStore, AltStore, Feather, ESign or Sideloadly), which re-signs it.
+First launch: enter `https://<your-domain>` and log in. UI updates come from the server automatically.
 
 ## 6. Updating the server
 
