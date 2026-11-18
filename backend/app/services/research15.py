@@ -1,4 +1,4 @@
-"""Research recorder for 15-minute crypto Up/Down markets (record only — never traded).
+"""Research recorder for 15-minute and 1-hour crypto Up/Down markets (record only — never traded).
 
 Slower markets may have fewer fast bots and longer-lasting mispricings. This records every
 second of every 15-minute market (order book top levels, Chainlink price, fast exchange price)
@@ -19,7 +19,7 @@ from ..models import ResearchMarket15, ResearchObs15
 from ..providers.polymarket.market_ws import MarketChannel
 
 log = logging.getLogger("reversal.research15")
-WINDOW = 900
+WINDOWS = (("15m", 900), ("1h", 3600))   # recorded for research (never traded)
 
 
 def _json_list(v):
@@ -34,6 +34,7 @@ def _json_list(v):
 class Research15:
     def __init__(self, collector) -> None:
         self.c = collector
+        self.counts = {lab: 0 for lab, _ in WINDOWS}
         self.channel = MarketChannel(collector.settings.clob_market_ws_url)
         self.markets: dict[str, dict] = {}       # slug -> info
         self.running = False
@@ -66,10 +67,10 @@ class Research15:
     async def _discover(self) -> None:
         while self.running:
             now = now_ms() // 1000
-            start = now // WINDOW * WINDOW
-            for st in (start, start + WINDOW):
+            todo = [(lab, w, st) for lab, w in WINDOWS for st in (now // w * w, now // w * w + w)]
+            for lab, WINDOW, st in todo:
                 for a, meta in ASSETS.items():
-                    slug = f"{meta['slug']}-updown-15m-{st}"
+                    slug = f"{meta['slug']}-updown-{lab}-{st}"
                     if slug in self.markets:
                         continue
                     r = await self.c.http.get(f"{self.c.settings.gamma_base_url}/events", params={"slug": slug}, timeout=10)
@@ -154,4 +155,8 @@ class Research15:
             await asyncio.sleep(60)
 
     def health(self) -> dict:
-        return {"tracking": len(self.markets), "rows_written": self.rows_written, "errors": self.errors}
+        by = {}
+        for slug in self.markets:
+            lab = slug.split("-updown-")[1].split("-")[0]
+            by[lab] = by.get(lab, 0) + 1
+        return {"tracking": len(self.markets), "by_window": by, "rows_written": self.rows_written, "errors": self.errors}

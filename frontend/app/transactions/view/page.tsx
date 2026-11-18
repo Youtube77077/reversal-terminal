@@ -38,6 +38,9 @@ function TxDetail() {
   if (!t) return <div className="page text-faint">Loading…</div>;
   const snap = t.entry_snapshot || {};
   const pc = t.profit_calculation;
+  // shares sold early are removed from filled_shares; rebuild what was originally bought
+  const bought = t.entry_price ? t.gross_cost / t.entry_price : t.filled_shares;
+  const sold = Math.max(0, bought - (t.filled_shares || 0));
   const mom = snap.momentum || {};
   return (
     <div className="page space-y-3">
@@ -53,7 +56,7 @@ function TxDetail() {
         <Stat label="Account / strategy" value={t.account_name} sub={`strategy ${t.strategy_key}`} />
         <Stat label="Asset · outcome" value={<span>{t.asset} <span className={t.outcome === "UP" ? "text-up" : "text-down"}>{t.outcome}</span></span>} sub={`${t.market_duration} · ${t.position}`} />
         <Stat label="Entry price (VWAP)" value={price(t.entry_price)} sub={`decision ask ${price(t.decision_ask)} · limit ${price(t.limit_price)}`} />
-        <Stat label="Shares filled" value={num(t.filled_shares, 2)} sub={`requested ${num(t.requested_shares, 2)} · unfilled ${num(t.unfilled_shares, 2)}`} />
+        <Stat label="Shares bought" value={num(bought, 2)} sub={sold > 1e-6 ? `sold ${num(sold, 2)} early at ${price(t.exit_price)} · ${num(t.filled_shares, 2)} still held` : `requested ${num(t.requested_shares, 2)} · unfilled ${num(t.unfilled_shares, 2)}`} />
         <Stat label="Entry time remaining" value={t.entry_secs_remaining != null ? `T-${t.entry_secs_remaining.toFixed(2)}s` : "—"} />
         <Stat label="Holding duration" value={dur(t.holding_seconds)} />
         <Stat label="Settlement outcome" value={t.settlement_outcome || "pending"} />
@@ -62,7 +65,7 @@ function TxDetail() {
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
         <Panel title="Profit calculation">
           <KV rows={[
-            ["1. Shares", num(t.filled_shares, 4)], ["2. Executable price (VWAP)", price(t.entry_price)],
+            ["1. Shares bought", sold > 1e-6 ? `${num(bought, 4)} (sold ${num(sold, 4)} early at ${price(t.exit_price)} for ${usd(t.exit_proceeds, 4)})` : num(t.filled_shares, 4)], ["2. Executable price (VWAP)", price(t.entry_price)],
             ["3. Gross cost", usd(pc.gross_cost, 6)], ["4. Platform trading fee", `${usd(pc.trading_fee, 6)}${t.fee_estimated ? " (estimated)" : ""}`],
             ["5. Slippage (in gross cost)", usd(pc.slippage_included_in_gross, 6)], ["   Spread cost vs mid (in gross)", usd(pc.spread_cost_vs_mid_included_in_gross, 6)],
             ["   Gas fee", `${usd(pc.gas_fee, 6)} (estimated: relayer-paid)`], ["   Network fee", usd(pc.network_fee, 6)],
