@@ -29,6 +29,7 @@ export default function Analytics() {
   const [minN, setMinN] = useState("30");
   const { data: pmap } = usePoll<any>(`/api/analytics/profit-map${qs({ min_n: minN })}`, 30000);
   const { data: curves } = usePoll<any>("/api/analytics/reversal-curves", 60000);
+  const { data: odds } = usePoll<any>("/api/analytics/odds", 60000);
   const { data: ser } = usePoll<any>("/api/analytics/series", 30000);
 
   const rateCols = (k: string, label: string) => [
@@ -70,6 +71,28 @@ export default function Analytics() {
             render: (r: any) => <Rate rate={r[`rev_T${t}`]?.rate} n={r[`rev_T${t}`]?.n} lo={r[`rev_T${t}`]?.ci_low} hi={r[`rev_T${t}`]?.ci_high} flag={r[`rev_T${t}`]?.sample} /> })),
           { key: "verdict", label: "Verdict", align: "center", render: (r: any) => <Verdict v={r.verdict} /> },
         ]} />
+      </Panel>
+      <Panel title="Real flip odds vs Polymarket price — every market" sub={`Updates as each 5-minute market resolves. ${odds?.note || ""}`}>
+        {odds?.all?.length ? (<>
+          <XYLines xs={odds.all.map((r: any) => r.t)} xLabel={(t) => `T-${t}`} series={[
+            { name: "Real flip rate", values: odds.all.map((r: any) => r.actual), n: odds.all.map((r: any) => r.n), color: "#00d64b" },
+            { name: "Polymarket price", values: odds.all.map((r: any) => r.market_price), color: "#ff9f0a" },
+            { name: "Model estimate", values: odds.all.map((r: any) => r.model), color: "#409cff" },
+          ]} />
+          <div className="mt-3"><DataTable exportName="odds_vs_price" rows={[
+            ...odds.all.map((r: any) => ({ asset: "ALL", ...r })),
+            ...Object.entries(odds.assets || {}).flatMap(([a, rows]: any) => rows.map((r: any) => ({ asset: a, ...r }))),
+          ]} maxHeight={420} cols={[
+            { key: "asset", label: "Coin", align: "left" }, { key: "t", label: "T-", render: (r: any) => `T-${r.t}` },
+            { key: "n", label: "n" },
+            { key: "actual", label: "Real flip %", render: (r: any) => <Rate rate={r.actual} n={r.n} lo={r.ci_low} hi={r.ci_high} /> },
+            { key: "market_price", label: "Polymarket price", render: (r: any) => pct(r.market_price) },
+            { key: "edge_vs_price", label: "Edge (real − price − fee)", render: (r: any) => <span className={(r.edge_vs_price ?? 0) > 0 ? "text-up" : "text-down"}>{pct(r.edge_vs_price)}</span> },
+            { key: "model", label: "Model %", render: (r: any) => pct(r.model) },
+            { key: "avg_abs_dist_bps", label: "Avg distance", render: (r: any) => `${num(r.avg_abs_dist_bps, 1)}bp` },
+            { key: "model_trades", label: "Model buys (won)", render: (r: any) => `${r.model_trades} (${r.model_trade_wins})` },
+          ]} /></div>
+        </>) : <div className="text-faint">Collecting data…</div>}
       </Panel>
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <Panel title="Reversal rate by time left — every market" sub="How often the favourite ended up losing, at each second before close. Tap names to hide/show.">

@@ -154,3 +154,9 @@ async def analytics_series(mode: str = "all", account_id: int | None = None):
 async def reversal_curves():
     from ..services import charts
     return await asyncio.to_thread(charts.reversal_curves)
+
+
+@router.get("/analytics/odds")
+async def odds():
+    from ..services import odds as odds_svc
+    return await asyncio.to_thread(odds_svc.odds_table)

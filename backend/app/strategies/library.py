@@ -74,7 +74,7 @@ FAVOURITE_KEYS = {"K", "L", "M"}
 STRATEGIES["N"] = {
     "name": "Smart Long Shot",
     "description": "Buy the cheap side only when a price model says the real flip chance beats price + fee.",
-    "params": {"max_price": 0.15, "min_edge": 0.01, "entry_min_secs": 1.0, "entry_max_secs": 45.0,
+    "params": {"max_price": 0.15, "min_edge": 0.03, "entry_min_secs": 1.0, "entry_max_secs": 45.0,
                "min_liquidity_usd": 1.0},
 }
 

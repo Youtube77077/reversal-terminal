@@ -10,8 +10,14 @@ import { price, signedUsd, usd } from "@/lib/format";
 const CHOICES = [
   { key: "K", name: "Safe favourite", tag: "Recommended", text: "In the last 30 seconds, buys the side that's almost sure to win (95%+). Small wins, rare big losses." },
   { key: "M", name: "Smart favourite", tag: "Data-driven", text: "Like Safe favourite, but only trades when past results prove it beats the fees. Trades less often." },
-  { key: "N", name: "Smart long shot", tag: "Checks the price", text: "Buys the cheap side only when the coin is close enough to flip and the real chance beats the price + fee. Never buys hopeless 1¢ shots." },
+  { key: "N", name: "Smart long shot", tag: "Experimental", text: "Buys the cheap side only when the coin is close enough to flip and the real chance beats the price + fee. Never buys hopeless 1¢ shots." },
 ];
+const COINS = ["BTC", "ETH", "SOL", "XRP", "DOGE", "HYPE", "BNB"];
+const DEFAULTS: Record<string, { max_price: number; min_price: number; entry_max_secs: number; min_edge: number; stake_usd: number }> = {
+  K: { max_price: 0.98, min_price: 0.90, entry_max_secs: 30, min_edge: 0, stake_usd: 5 },
+  M: { max_price: 0.99, min_price: 0.85, entry_max_secs: 30, min_edge: 0, stake_usd: 5 },
+  N: { max_price: 0.15, min_price: 0, entry_max_secs: 45, min_edge: 0.03, stake_usd: 1 },
+};
 const LOSS = [{ v: 25, l: "¼ of it" }, { v: 50, l: "Half" }, { v: 100, l: "All of it" }];
 const WIN = [{ v: 0, l: "Never" }, { v: 50, l: "+50%" }, { v: 100, l: "Double" }, { v: 200, l: "Triple" }];
 
@@ -23,6 +29,10 @@ export default function BotPage() {
   const [loss, setLoss] = useState(100);
   const [win, setWin] = useState(0);
   const [strat, setStrat] = useState("K");
+  const [coins, setCoins] = useState<string[]>(COINS);
+  const [adv, setAdv] = useState(false);
+  const [cfg, setCfg] = useState(DEFAULTS.K);
+  useEffect(() => setCfg(DEFAULTS[strat] || DEFAULTS.K), [strat]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -56,6 +66,7 @@ export default function BotPage() {
       await post(`/api/accounts/${acct.id}/session/start`, {
         risk_budget_mode: real ? "amount" : "percent", risk_budget_value: real ? budget : 100,
         stop_loss_pct: loss, take_profit_mode: win ? "percent" : "off", take_profit_value: win, strategy_key: strat,
+        params: { ...cfg, assets: coins.length === COINS.length ? [] : coins },
       });
       (window as any).ReversalNative?.haptic("success");
       reload();
@@ -119,6 +130,25 @@ export default function BotPage() {
                   ))}
                 </div>
 
+                {/* 5. markets + settings */}
+                <div className="mt-5 text-[13px] font-bold opacity-75">Trade on</div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {COINS.map((c) => {
+                    const on = coins.includes(c);
+                    return <button key={c} onClick={() => setCoins((x) => on ? x.filter((y) => y !== c) : [...x, c])}
+                      className={clsx("rounded-full px-4 py-2 text-[14px] font-bold transition active:scale-95", on ? "bg-black text-white" : "bg-black/10 opacity-70")}>{c}</button>;
+                  })}
+                </div>
+                <button onClick={() => setAdv(!adv)} className="mt-4 text-[14px] font-bold underline opacity-80">{adv ? "Hide settings" : "Change settings (prices, timing, stake)"}</button>
+                {adv && (
+                  <div className="mt-3 grid grid-cols-2 gap-2 animate-fade">
+                    <Num label={strat === "N" ? "Max price (¢)" : "Max price (¢)"} value={Math.round(cfg.max_price * 100)} onChange={(v) => setCfg({ ...cfg, max_price: v / 100 })} />
+                    <Num label="Min price (¢)" value={Math.round(cfg.min_price * 100)} onChange={(v) => setCfg({ ...cfg, min_price: v / 100 })} />
+                    <Num label="Only last … seconds" value={cfg.entry_max_secs} onChange={(v) => setCfg({ ...cfg, entry_max_secs: v })} />
+                    <Num label="$ per trade" value={cfg.stake_usd} onChange={(v) => setCfg({ ...cfg, stake_usd: v })} />
+                    {strat !== "K" && <Num label="Min edge (points %)" value={Math.round(cfg.min_edge * 100)} onChange={(v) => setCfg({ ...cfg, min_edge: v / 100 })} />}
+                  </div>
+                )}
                 {err && <div className="mt-4 rounded-2xl bg-black/15 px-4 py-3 text-center text-[14px] font-semibold">{err}</div>}
                 <button onClick={start} disabled={busy || !acct || budget < 1}
                   className="mt-5 w-full rounded-full bg-black py-4 text-[18px] font-bold text-white transition active:scale-[.98] disabled:opacity-50">
@@ -193,4 +223,14 @@ function Running({ acct, ss, busy, onStop }: { acct: any; ss: any; busy: boolean
 
 function Box({ k, v }: { k: string; v: string }) {
   return <div className="rounded-2xl bg-black/10 py-3"><div className="text-[12px] font-semibold opacity-70">{k}</div><div className="num text-[17px] font-bold">{v}</div></div>;
+}
+
+function Num({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
+  return (
+    <label className="rounded-2xl bg-black/10 px-3 py-2">
+      <span className="block text-[11px] font-bold opacity-70">{label}</span>
+      <input inputMode="decimal" value={String(value)} onChange={(e) => onChange(Number(e.target.value.replace(/[^0-9.]/g, "")) || 0)}
+        className="num w-full bg-transparent text-[18px] font-bold outline-none" />
+    </label>
+  );
 }
