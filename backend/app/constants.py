@@ -3,6 +3,9 @@ from __future__ import annotations
 
 MARKET_DURATION_SECONDS = 300  # 5-minute markets only. 15m markets are excluded.
 MARKET_WINDOW_LABEL = "5m"
+# Markets the collector discovers, records and can trade. Same settlement rule for both
+# (Chainlink 60s TWAP at end vs at start). 5-minute analytics stay 5-minute only.
+WINDOWS: dict[str, int] = {"5m": 300, "15m": 900}
 
 ASSETS: dict[str, dict] = {
     "BTC": {"name": "Bitcoin", "slug": "btc", "chainlink": "btc/usd", "binance": "btcusdt", "coinbase": "BTC-USD"},

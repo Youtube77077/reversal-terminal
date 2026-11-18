@@ -59,3 +59,11 @@ def test_bids_fills_only_full_and_above_target():
     assert _bids_fills([(0.92, 10), (0.91, 10)], 15, 0.90) == [(0.92, 10), (0.91, 5)]
     assert _bids_fills([(0.92, 5), (0.85, 100)], 15, 0.90) is None   # not enough depth at >= 90c
     assert _bids_fills([], 5, 0.9) is None
+
+
+def test_window_labels_and_slugs():
+    from app.providers.polymarket.discovery import label_of, slug_for, window_start
+    assert slug_for("BTC", 1795009500, "15m") == "btc-updown-15m-1795009500"
+    assert label_of("btc-updown-15m-1795009500") == "15m"
+    assert label_of("eth-updown-5m-1795009500") == "5m"
+    assert window_start(1795009999, 900) == 1795009500

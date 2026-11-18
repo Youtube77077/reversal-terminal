@@ -124,7 +124,7 @@ def asset_report(asset: str) -> dict:
     with engine.connect() as c:
         mk = c.execute(text(
             "SELECT COUNT(*), SUM(status='resolved'), SUM(winner='UP'), SUM(winner='DOWN'), "
-            "AVG(ABS(close_price-open_price)/open_price*1e4) FROM markets WHERE asset=:a"), {"a": asset}).one()
+            "AVG(ABS(close_price-open_price)/open_price*1e4) FROM markets WHERE asset=:a AND COALESCE(window,'5m')='5m'"), {"a": asset}).one()
         ob = c.execute(text(
             "SELECT COUNT(*), AVG(up_ask-up_bid), AVG(down_ask-down_bid), AVG(up_ask_liq+down_ask_liq), "
             "AVG(vol_30s), AVG(CASE WHEN book_ok THEN 1.0 ELSE 0 END), AVG(CASE WHEN spot_ok THEN 1.0 ELSE 0 END), "

@@ -46,6 +46,7 @@ def load() -> pd.DataFrame:
                c.dist_bps, o.spot AS o_spot, o.open_price AS o_open, o.twap60_est AS o_twap, o.vol_30s AS o_vol
         FROM checkpoints c
         JOIN market_observations o ON o.market_id = c.market_id AND o.server_ts = c.server_ts
+        JOIN markets mk ON mk.id = c.market_id AND COALESCE(mk.window, '5m') = '5m'
         WHERE c.valid = 1 AND c.favourite_lost IS NOT NULL AND c.source = 'live' AND c.dog_ask IS NOT NULL
           AND o.spot IS NOT NULL AND o.open_price IS NOT NULL""")
     df = pd.read_sql(q, engine)

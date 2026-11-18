@@ -36,7 +36,7 @@ def _q(arr, q):
 def compute(days: int = 30) -> dict:
     since = int((time.time() - days * 86400) * 1000)
     m = pd.read_sql(text("SELECT id, asset, open_ts, close_ts, winner FROM markets "
-                         "WHERE status='resolved' AND winner IN ('UP','DOWN') AND open_ts >= :s"), engine, params={"s": since})
+                         "WHERE status='resolved' AND winner IN ('UP','DOWN') AND open_ts >= :s AND COALESCE(window,'5m')='5m'"), engine, params={"s": since})
     sp = pd.read_sql(text("SELECT asset, COALESCE(spot_exchange_ts, server_ts) AS ts, spot, vol_30s FROM market_observations "
                           "WHERE spot IS NOT NULL AND server_ts >= :s"), engine, params={"s": since - 120_000})
     out = {"generated_ts": int(time.time() * 1000), "markets": int(len(m)), "assets": {}}
@@ -200,8 +200,9 @@ def _streak(seq: list, val: bool) -> int:
 def flip_rates(days: int = 30) -> dict:
     """Favourite-lost rate and Polymarket's underdog price per coin and time left (from checkpoints)."""
     since = int((time.time() - days * 86400) * 1000)
-    df = pd.read_sql(text("SELECT asset, t_minus, favourite_lost, fav_prob FROM checkpoints WHERE valid=1 AND "
-                          "favourite_lost IS NOT NULL AND source='live' AND server_ts >= :s"), engine, params={"s": since})
+    df = pd.read_sql(text("SELECT c.asset, c.t_minus, c.favourite_lost, c.fav_prob FROM checkpoints c "
+                          "JOIN markets m ON m.id = c.market_id AND COALESCE(m.window,'5m')='5m' WHERE c.valid=1 AND "
+                          "c.favourite_lost IS NOT NULL AND c.source='live' AND c.server_ts >= :s"), engine, params={"s": since})
     out = {}
     for a, g in df.groupby("asset"):
         rows = []

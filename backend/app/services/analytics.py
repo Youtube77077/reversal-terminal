@@ -64,7 +64,7 @@ def clean_records(df: pd.DataFrame) -> list[dict]:
 def load_checkpoints(source: str = "live", asset: str | None = None, start_ts: int | None = None,
                      end_ts: int | None = None, include_unresolved: bool = False) -> pd.DataFrame:
     q = "SELECT c.*, m.slug, m.open_ts, m.close_ts FROM checkpoints c JOIN markets m ON m.id = c.market_id " \
-        "WHERE c.source = :src AND c.valid = 1"
+        "WHERE c.source = :src AND c.valid = 1 AND COALESCE(m.window, '5m') = '5m'"
     p: dict = {"src": source}
     if not include_unresolved:
         q += " AND c.favourite_lost IS NOT NULL"

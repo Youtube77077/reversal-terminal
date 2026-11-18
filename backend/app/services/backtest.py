@@ -63,7 +63,8 @@ def run_backtest(strategy_key: str, params: dict | None = None, start_ts: int | 
                  starting_balance: float = 20.0) -> dict:
     params = params or {}
     q = ("SELECT id, asset, slug, open_ts, close_ts, winner, open_price, fee_rate, fee_exponent, fee_taker_only, "
-         "fee_verified, min_order_size, tick_size FROM markets WHERE status='resolved' AND winner IN ('UP','DOWN')")
+         "fee_verified, min_order_size, tick_size FROM markets WHERE status='resolved' AND winner IN ('UP','DOWN') "
+         "AND COALESCE(window,'5m')='5m'")
     p: dict = {}
     if start_ts:
         q += " AND open_ts >= :s"
@@ -83,6 +84,7 @@ def run_backtest(strategy_key: str, params: dict | None = None, start_ts: int | 
     obs = pd.read_sql(text(f"SELECT * FROM market_observations WHERE market_id IN ({ids}) ORDER BY server_ts"), engine)
     ck = pd.read_sql(text(f"SELECT c.asset, c.t_minus, c.dog_ask, c.favourite_lost, m.close_ts FROM checkpoints c "
                           f"JOIN markets m ON m.id=c.market_id WHERE c.valid=1 AND c.favourite_lost IS NOT NULL "
+                          f"AND COALESCE(m.window,'5m')='5m' "
                           f"AND c.source='live' ORDER BY m.close_ts"), engine)
     ck["known_ts"] = ck["close_ts"] + RESOLUTION_DELAY_MS
     ck["bucket"] = ck["dog_ask"].map(price_bucket)

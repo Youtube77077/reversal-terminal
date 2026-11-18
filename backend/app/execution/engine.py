@@ -93,8 +93,9 @@ class TradingEngine:
         cache: dict[tuple[str, int, str], list[int]] = {}
         with session_scope() as s:
             rows = s.execute(select(Checkpoint.asset, Checkpoint.t_minus, Checkpoint.dog_ask, Checkpoint.favourite_lost)
+                             .join(Market, Market.id == Checkpoint.market_id)
                              .where(Checkpoint.valid.is_(True), Checkpoint.favourite_lost.is_not(None),
-                                    Checkpoint.source == "live")).all()
+                                    Checkpoint.source == "live", Market.window == "5m")).all()
         for asset, t, ask, lost in rows:
             b = price_bucket(ask)
             if b is None:
@@ -137,8 +138,9 @@ class TradingEngine:
                 continue
             params = json.loads(acct["params_json"] or "{}")
             allowed = acct["assets"]
+            wins = params.get("windows") or ["5m"]
             for st in states:
-                if st.asset not in allowed or st.asset in paused_assets:
+                if st.asset not in allowed or st.asset in paused_assets or st.window not in wins:
                     continue
                 key = (acct["id"], st.market_id)
                 if key in self.inflight or key in self._done:
@@ -314,6 +316,7 @@ class TradingEngine:
             snapshot["decision"] = {"reasons": d.reasons, "expected": d.expected}
             s.add(Transaction(
                 id=txid, account_id=acct.id, experiment_id=exp_id, strategy_key=acct.strategy_key, mode=acct.mode,
+                market_duration=st.window,
                 source="live", signal_id=sig.id, order_id=order.id, market_id=st.market_id, asset=st.asset,
                 outcome=d.side, order_type=d.order_type, limit_price=d.limit_price, decision_ask=d.decision_ask,
                 requested_shares=d.shares, unfilled_shares=d.shares, status="pending", created_ts=st.server_ts,
@@ -478,8 +481,10 @@ class TradingEngine:
                             await self._check_exits(self._fast_accounts, smap)
                         for acct in self._fast_accounts:
                             params = json.loads(acct["params_json"] or "{}")
+                            wins = params.get("windows") or ["5m"]
                             for st in states:
-                                if st.asset not in acct["assets"] or st.asset in getattr(self, "_paused_assets", set()):
+                                if (st.asset not in acct["assets"] or st.asset in getattr(self, "_paused_assets", set())
+                                        or st.window not in wins):
                                     continue
                                 key = (acct["id"], st.market_id)
                                 if key in self.inflight or key in self._done:

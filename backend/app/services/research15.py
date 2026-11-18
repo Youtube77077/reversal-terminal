@@ -19,7 +19,7 @@ from ..models import ResearchMarket15, ResearchObs15
 from ..providers.polymarket.market_ws import MarketChannel
 
 log = logging.getLogger("reversal.research15")
-WINDOWS = (("15m", 900), ("1h", 3600))   # recorded for research (never traded)
+WINDOWS = (("1h", 3600),)   # 1-hour: research only. 15-minute markets now run in the main collector.
 
 
 def _json_list(v):

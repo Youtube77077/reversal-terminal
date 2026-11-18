@@ -28,7 +28,7 @@ from sqlalchemy import select, text
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from ..config import get_settings
-from ..constants import ASSETS, CHECKPOINTS, MARKET_DURATION_SECONDS
+from ..constants import ASSETS, CHECKPOINTS, MARKET_DURATION_SECONDS, WINDOWS
 from ..db import now_ms, session_scope
 from ..models import (
     Asset,
@@ -40,7 +40,7 @@ from ..models import (
     OrderBookSnapshot,
     UnderlyingPrice,
 )
-from ..providers.polymarket.discovery import DiscoveredMarket, fetch_market, window_start
+from ..providers.polymarket.discovery import DiscoveredMarket, fetch_market, label_of, window_start
 from ..providers.polymarket.fees import FeeSchedule
 from ..providers.polymarket.market_ws import MarketChannel
 from ..providers.polymarket.resolution import fetch_reference_prices, winner_from_prices
@@ -205,8 +205,11 @@ class Collector:
         while self.running:
             now_s = time.time()
             ws = window_start(now_s)
-            targets = [ws, ws + MARKET_DURATION_SECONDS]
-            await asyncio.gather(*(self._discover_asset(a, targets) for a in self.assets), return_exceptions=True)
+            jobs = []
+            for label, dur in WINDOWS.items():
+                w0 = window_start(now_s, dur)
+                jobs += [self._discover_asset(a, [w0, w0 + dur], label) for a in self.assets]
+            await asyncio.gather(*jobs, return_exceptions=True)
             await self._prune_subscriptions()
             # idempotent: guarantees books for markets restored from the DB after a restart
             await self.channel.track([t for m in self.markets.values() if m.close_ts > now_ms()
@@ -215,12 +218,13 @@ class Collector:
             secs_into = now_s - ws
             await asyncio.sleep(5 if secs_into > 240 or secs_into < 15 else self.settings.discovery_poll_seconds)
 
-    async def _discover_asset(self, asset: str, starts: list[int]) -> None:
+    async def _discover_asset(self, asset: str, starts: list[int], label: str = "5m") -> None:
         for st in starts:
-            if any(m.asset == asset and m.open_ts == st * 1000 for m in self.markets.values()):
+            if any(m.asset == asset and m.open_ts == st * 1000 and (getattr(m, "window", None) or "5m") == label
+                   for m in self.markets.values()):
                 continue
             try:
-                dm = await fetch_market(self.http, self.settings.gamma_base_url, asset, st)
+                dm = await fetch_market(self.http, self.settings.gamma_base_url, asset, st, label)
                 registry.ok("gamma")
             except Exception as e:
                 registry.fail("gamma", repr(e))
@@ -228,7 +232,7 @@ class Collector:
                 record_event("connection_failed", f"{asset}: market discovery failed ({e!r})", level="WARNING")
                 continue
             if dm is None:
-                if st == starts[0]:
+                if st == starts[0] and label == "5m":
                     self._set_asset_status(asset, "unavailable",
                                            f"No 5-minute market found for window starting {st} — not substituted")
                 continue
@@ -248,7 +252,7 @@ class Collector:
             if m is None:
                 m = Market(asset=dm.asset, slug=dm.slug, discovered_ts=now_ms())
                 s.add(m)
-            m.window = "5m"
+            m.window = dm.window
             m.gamma_event_id, m.gamma_market_id = dm.gamma_event_id, dm.gamma_market_id
             m.condition_id, m.question_id, m.question = dm.condition_id, dm.question_id, dm.question
             m.up_token_id, m.down_token_id = dm.up_token_id, dm.down_token_id
@@ -565,7 +569,13 @@ class Collector:
     def _update_live_state(self, m: Market, st: MarketState) -> None:
         f = st.features
         dog = st.underdog
-        self.live_states[m.asset] = {
+        if st.window != "5m":            # keep the live 5-minute screens 5-minute only
+            if not hasattr(self, "live_states_other"):
+                self.live_states_other = {}
+            target = self.live_states_other.setdefault(st.window, {})
+        else:
+            target = self.live_states
+        target[m.asset] = {
             "asset": m.asset, "market_id": m.id, "slug": m.slug, "question": m.question,
             "open_ts": m.open_ts, "close_ts": m.close_ts, "secs_remaining": st.secs_remaining,
             "up_bid": st.up_bid, "up_ask": st.up_ask, "down_bid": st.down_bid, "down_ask": st.down_ask,
@@ -620,7 +630,7 @@ class Collector:
             registry.fail("crypto_price", repr(e))
         dm = None
         try:
-            dm = await fetch_market(self.http, self.settings.gamma_base_url, asset, ots // 1000)
+            dm = await fetch_market(self.http, self.settings.gamma_base_url, asset, ots // 1000, label_of(slug))
             registry.ok("gamma")
         except Exception as e:
             registry.fail("gamma", repr(e))

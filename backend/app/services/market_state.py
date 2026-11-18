@@ -39,6 +39,7 @@ class MarketState:
     book_ok: bool = False
     features: dict = field(default_factory=dict)
     spot_ok: bool = False
+    window: str = "5m"          # 5m | 15m
 
     # ------------------------------------------------------------ derived
     @property
@@ -171,6 +172,7 @@ def build_state(market, up_book: TokenBook | None, down_book: TokenBook | None, 
         close_ts=market.close_ts, server_ts=server_ts, secs_remaining=(market.close_ts - server_ts) / 1000.0,
         open_price=market.open_price, fee=fee, min_order_size=market.min_order_size or 5.0,
         tick_size=market.tick_size or 0.01, features=features,
+        window=getattr(market, "window", None) or "5m",
     )
     if up_book is not None and up_book.has_snapshot:
         st.up_bid, st.up_ask = up_book.best_bid, up_book.best_ask

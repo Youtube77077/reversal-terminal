@@ -19,18 +19,27 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 
-from ...constants import ASSETS, MARKET_DURATION_SECONDS, MARKET_WINDOW_LABEL
+from ...constants import ASSETS, MARKET_DURATION_SECONDS, MARKET_WINDOW_LABEL, WINDOWS
 from .fees import FeeSchedule, schedule_from_market
 
 log = logging.getLogger("reversal.discovery")
 
 
-def window_start(ts_sec: float) -> int:
-    return int(ts_sec // MARKET_DURATION_SECONDS * MARKET_DURATION_SECONDS)
+def window_start(ts_sec: float, duration: int = MARKET_DURATION_SECONDS) -> int:
+    return int(ts_sec // duration * duration)
 
 
-def slug_for(asset: str, start_sec: int) -> str:
-    return f"{ASSETS[asset]['slug']}-updown-{MARKET_WINDOW_LABEL}-{start_sec}"
+def slug_for(asset: str, start_sec: int, label: str = MARKET_WINDOW_LABEL) -> str:
+    return f"{ASSETS[asset]['slug']}-updown-{label}-{start_sec}"
+
+
+def label_of(slug: str) -> str:
+    """'btc-updown-15m-1795...' -> '15m' (defaults to 5m)."""
+    try:
+        lab = slug.split("-updown-")[1].split("-")[0]
+        return lab if lab in WINDOWS else MARKET_WINDOW_LABEL
+    except IndexError:
+        return MARKET_WINDOW_LABEL
 
 
 def _parse_iso_ms(s: str | None) -> int | None:
@@ -81,6 +90,7 @@ class DiscoveredMarket:
     uma_status: str | None
     substitution_note: str | None
     raw: dict
+    window: str = "5m"
 
     @property
     def status(self) -> str:
@@ -131,17 +141,19 @@ def parse_event(asset: str, slug: str, event: dict) -> DiscoveredMarket | None:
         notes.append(f"unexpected outcomes {outcomes} / {len(tokens)} tokens — market unusable")
 
     start_sec = int(slug.rsplit("-", 1)[-1])
+    label = label_of(slug)
+    dur = WINDOWS.get(label, MARKET_DURATION_SECONDS)
     open_ts = _parse_iso_ms(m.get("eventStartTime") or event.get("startTime")) or start_sec * 1000
-    close_ts = _parse_iso_ms(m.get("endDate") or event.get("endDate")) or (start_sec + MARKET_DURATION_SECONDS) * 1000
+    close_ts = _parse_iso_ms(m.get("endDate") or event.get("endDate")) or (start_sec + dur) * 1000
     if open_ts != start_sec * 1000:
         notes.append(f"eventStartTime {open_ts} != slug window start {start_sec * 1000}")
-    if close_ts - open_ts != MARKET_DURATION_SECONDS * 1000:
-        notes.append(f"duration {(close_ts - open_ts) / 1000:.0f}s is not 300s")
+    if close_ts - open_ts != dur * 1000:
+        notes.append(f"duration {(close_ts - open_ts) / 1000:.0f}s is not {dur}s")
 
     cfg = m.get("cryptoMarketConfig") or {}
     twap = cfg.get("twapLookbackSeconds") if cfg.get("twapEnabled") else None
-    if cfg and cfg.get("duration") and cfg.get("duration") != MARKET_WINDOW_LABEL:
-        notes.append(f"cryptoMarketConfig duration {cfg.get('duration')} is not 5m")
+    if cfg and cfg.get("duration") and cfg.get("duration") != label:
+        notes.append(f"cryptoMarketConfig duration {cfg.get('duration')} is not {label}")
     method = (
         f"Resolves UP if the Chainlink {asset}/USD "
         + (f"{twap}s-TWAP " if twap else "")
@@ -178,6 +190,7 @@ def parse_event(asset: str, slug: str, event: dict) -> DiscoveredMarket | None:
         uma_status=m.get("umaResolutionStatus"),
         substitution_note="; ".join(notes) or None,
         raw={k: v for k, v in m.items() if k not in ("description",)},
+        window=label,
     )
 
 
@@ -189,9 +202,10 @@ def _prices_up_down(outcomes: list[str], prices: list) -> list[str]:
     return prices
 
 
-async def fetch_market(client, gamma_base: str, asset: str, start_sec: int) -> DiscoveredMarket | None:
-    """Fetch one 5m window for ``asset`` from Gamma. Returns None if it does not exist."""
-    slug = slug_for(asset, start_sec)
+async def fetch_market(client, gamma_base: str, asset: str, start_sec: int,
+                       label: str = MARKET_WINDOW_LABEL) -> DiscoveredMarket | None:
+    """Fetch one window (5m or 15m) for ``asset`` from Gamma. Returns None if it does not exist."""
+    slug = slug_for(asset, start_sec, label)
     r = await client.get(f"{gamma_base}/events", params={"slug": slug}, timeout=10)
     r.raise_for_status()
     data = r.json()

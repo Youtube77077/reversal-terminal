@@ -35,6 +35,7 @@ export default function BotPage() {
   const [loss, setLoss] = useState(100);
   const [win, setWin] = useState(0);
   const [strat, setStrat] = useState("K");
+  const [wins, setWins] = useState<string[]>(["5m"]);
   const [coins, setCoins] = useState<string[]>(COINS);
   const [adv, setAdv] = useState(false);
   const [cfg, setCfg] = useState<Cfg>(DEFAULTS.K);
@@ -75,7 +76,7 @@ export default function BotPage() {
       await post(`/api/accounts/${acct.id}/session/start`, {
         risk_budget_mode: "amount", risk_budget_value: budget,
         stop_loss_pct: loss, take_profit_mode: win ? "percent" : "off", take_profit_value: win, strategy_key: strat,
-        params: { ...cfg, assets: coins.length === COINS.length ? [] : coins },
+        params: { ...cfg, assets: coins.length === COINS.length ? [] : coins, windows: wins.length ? wins : ["5m"] },
       });
       (window as any).ReversalNative?.haptic("success");
       reload(); reloadW();
@@ -142,6 +143,17 @@ export default function BotPage() {
                 </div>
 
                 {/* 5. markets + settings */}
+                <div className="mt-5 text-[13px] font-bold opacity-75">Markets</div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {[["5m", "5-minute"], ["15m", "15-minute (new — testing)"]].map(([k, l]) => {
+                    const on = wins.includes(k);
+                    return (
+                      <button key={k} onClick={() => setWins(on ? wins.filter((x) => x !== k) : [...wins, k])}
+                        className={clsx("rounded-full px-4 py-2 text-[13px] font-bold", on ? "bg-black text-white" : "bg-black/10")}>
+                        {on ? "✓ " : ""}{l}</button>
+                    );
+                  })}
+                </div>
                 <div className="mt-5 text-[13px] font-bold opacity-75">Trade on</div>
                 <div className="mt-2 flex flex-wrap gap-2">
                   {COINS.map((c) => {
