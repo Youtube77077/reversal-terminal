@@ -46,6 +46,7 @@ from ..providers.polymarket.market_ws import MarketChannel
 from ..providers.polymarket.resolution import fetch_reference_prices, winner_from_prices
 from ..providers.polymarket.rtds import ChainlinkFeed
 from ..providers.spot.binance import BinanceFeed
+from ..providers.spot.exchanges import FAST_SOURCES, CoinbaseFeed, HyperliquidFeed, OkxFeed
 from .connections import registry
 from .events import record_event
 from .market_state import MarketState, build_state, implied_up_prob
@@ -70,6 +71,8 @@ class Collector:
         self.channel = MarketChannel(self.settings.clob_market_ws_url)
         self.chainlink = ChainlinkFeed(self.settings.rtds_ws_url, self.prices, self.assets)
         self.binance = BinanceFeed(self.settings.binance_ws_url, self.prices, self.assets)
+        self.fast_feeds = [CoinbaseFeed(self.prices, self.assets), OkxFeed(self.prices, self.assets),
+                           HyperliquidFeed(self.prices, self.assets)]
         self.http: httpx.AsyncClient | None = None
         self.markets: dict[int, Market] = {}          # active + upcoming market rows (detached copies)
         self.fees: dict[int, FeeSchedule] = {}
@@ -105,6 +108,8 @@ class Collector:
         self.channel.start()
         self.chainlink.start()
         self.binance.start()
+        for f in self.fast_feeds:
+            f.start()
         for name, coro in (("discovery", self._discovery_loop), ("sampler", self._sample_loop),
                            ("refprice", self._refprice_loop), ("resolver", self._resolution_loop),
                            ("health", self._health_loop)):
@@ -118,6 +123,8 @@ class Collector:
         await self.channel.stop()
         await self.chainlink.stop()
         await self.binance.stop()
+        for f in self.fast_feeds:
+            await f.stop()
         if self.http:
             await self.http.aclose()
         record_event("collector_stopped", "Collector stopped", level="WARNING")
@@ -330,7 +337,7 @@ class Collector:
         ts_sec = ts // 1000
 
         for asset in self.assets:
-            for src in ("chainlink", "binance"):
+            for src in ("chainlink", "binance", "coinbase", "okx", "hyperliquid"):
                 ser = self.prices.get(asset, src)
                 if ser and ser.last and ts - ser.last.server_ts < 10_000:
                     px_rows.append({"asset": asset, "source": src, "ts_sec": ts_sec,
@@ -381,13 +388,78 @@ class Collector:
             except Exception:
                 pass
 
+    def _price_to_beat(self, m: Market, ts: int) -> float | None:
+        """Settlement threshold = Chainlink 60s-TWAP at window start (official rule).
+
+        Verified on 665 resolved markets: TWAP(end) >= TWAP(start) reproduces the official
+        winner 98.7% of the time, vs 87% for the instantaneous open price.
+        """
+        ptb = getattr(m, "price_to_beat", None)
+        if ptb:
+            return ptb
+        if ts < m.open_ts + 500:
+            return None
+        ser = self.prices.get(m.asset, "chainlink")
+        if not ser or not ser.ts or ser.ts[0] > m.open_ts - 50_000:
+            return None          # not enough history before the window started (e.g. just restarted)
+        v = ser.twap(m.open_ts - 60_000, m.open_ts)
+        if v:
+            m.price_to_beat = v
+            try:
+                with db_write_lock, session_scope() as s:
+                    row = s.get(Market, m.id)
+                    if row:
+                        row.price_to_beat = v
+            except Exception:
+                pass
+        return v
+
+    def _fast_spot(self, asset: str, ts: int, chainlink_spot: float | None) -> dict:
+        """Blend of fast exchange feeds, each shifted onto Chainlink's level.
+
+        Each exchange trades at a slightly different level (USDT vs USD, perp basis), so we
+        measure each feed's typical gap to Chainlink over the last minute and remove it. The
+        median of the adjusted feeds is where Chainlink is heading."""
+        cl = self.prices.get(asset, "chainlink")
+        ests, used = [], []
+        for src in FAST_SOURCES:
+            ser = self.prices.get(asset, src)
+            if not ser or not ser.last or ts - ser.last.server_ts > 2000 or not cl or not cl.ts:
+                continue
+            diffs = []
+            for k in range(5, 60, 5):
+                a, b = cl.price_at(ts - k * 1000 - 1000), ser.price_at(ts - k * 1000 - 1000)
+                if a and b:
+                    diffs.append(a - b)
+            if len(diffs) < 4:
+                continue
+            diffs.sort()
+            ests.append(ser.last.price + diffs[len(diffs) // 2])
+            used.append(src)
+        if not ests:
+            return {"fast_spot": None, "fast_sources": [], "lead": None}
+        ests.sort()
+        n = len(ests)
+        fast = ests[n // 2] if n % 2 else (ests[n // 2 - 1] + ests[n // 2]) / 2
+        return {"fast_spot": fast, "fast_sources": used,
+                "lead": (fast - chainlink_spot) if chainlink_spot else None}
+
     def _state_for(self, m: Market, ts: int) -> MarketState:
         src = self.settings.price_provider_for(m.asset)
-        feats = self.prices.features(m.asset, src, ts, m.open_price)
+        ptb = self._price_to_beat(m, ts) or m.open_price
+        feats = self.prices.features(m.asset, src, ts, ptb)
         if feats.get("spot") is None and src != "binance":  # fallback, recorded in spot_source
-            feats = self.prices.features(m.asset, "binance", ts, m.open_price)
+            feats = self.prices.features(m.asset, "binance", ts, ptb)
+        # average of the settlement window so far (the part of the final 60s TWAP already known)
+        ser = self.prices.get(m.asset, src)
+        win_start = m.close_ts - 60_000
+        feats["twap_window"] = ser.twap(win_start, ts) if (ser and ts > win_start + 500) else None
+        feats["price_to_beat"] = ptb
+        feats["ptb_exact"] = bool(getattr(m, "price_to_beat", None))
+        feats.update(self._fast_spot(m.asset, ts, feats.get("spot")))
         st = build_state(m, self.channel.books.get(m.up_token_id), self.channel.books.get(m.down_token_id),
                          feats, ts, self.fees.get(m.id) or FeeSchedule())
+        st.open_price = ptb
         status = "live" if (st.book_ok and st.spot_ok) else ("degraded" if (st.book_ok or st.spot_ok) else "offline")
         detail = None if status == "live" else (
             ("order book not synced; " if not st.book_ok else "") + ("spot feed stale" if not st.spot_ok else ""))
@@ -416,7 +488,7 @@ class Collector:
             "last_trade_down": dnb.last_trade_price if dnb else None,
             "trade_volume": vol,
             "spot": f.get("spot"), "spot_exchange_ts": f.get("spot_exchange_ts"), "spot_source": f.get("spot_source"),
-            "twap60_est": f.get("twap60_est"), "open_price": st.open_price,
+            "twap60_est": f.get("twap60_est"), "open_price": st.open_price, "fast_spot": f.get("fast_spot"), "twap_window": f.get("twap_window"),
             "dist_abs": f.get("dist_abs"), "dist_bps": f.get("dist_bps"),
             "mom_1s": f.get("mom_1s"), "mom_3s": f.get("mom_3s"), "mom_5s": f.get("mom_5s"),
             "mom_10s": f.get("mom_10s"), "mom_30s": f.get("mom_30s"), "mom_60s": f.get("mom_60s"),

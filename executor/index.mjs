@@ -101,15 +101,16 @@ async function fetchOrder(st, orderId) {
     size: Number(o.original_size ?? o.originalSize ?? o.size ?? 0), sizeMatched: Number(o.size_matched ?? o.sizeMatched ?? 0) };
 }
 
-async function placeLimitFak(st, { tokenId, price, size, waitMs = 2500 }) {
+async function placeLimitFak(st, { tokenId, price, size, side = "BUY", waitMs = 2500 }) {
+  const isSell = String(side).toUpperCase() === "SELL";
   if (!LIVE) return { ok: false, error: "live trading is switched off" };
   if (!st.ready) return { ok: false, error: st.error || "wallet not connected" };
   price = Number(price); size = Number(size);
   if (!tokenId || !(price > 0 && price < 1) || !(size > 0)) return { ok: false, error: "invalid order parameters" };
-  if (price * size > MAX_ORDER_USD + 1e-9) return { ok: false, error: `notional $${(price * size).toFixed(2)} > cap $${MAX_ORDER_USD}` };
+  if (!isSell && price * size > MAX_ORDER_USD + 1e-9) return { ok: false, error: `notional $${(price * size).toFixed(2)} > cap $${MAX_ORDER_USD}` };
   st.orders++;
   let resp;
-  try { resp = await st.secure.placeLimitOrder({ tokenId, price, size, side: OrderSide.BUY }); }
+  try { resp = await st.secure.placeLimitOrder({ tokenId, price, size, side: isSell ? OrderSide.SELL : OrderSide.BUY }); }
   catch (e) { st.rejects++; return { ok: false, error: e?.message ?? String(e) }; }
   const orderId = resp?.orderId;
   if (resp?.ok === false || !orderId) { st.rejects++; return { ok: false, error: String(resp?.error ?? resp?.errorMsg ?? "rejected") }; }
@@ -123,7 +124,7 @@ async function placeLimitFak(st, { tokenId, price, size, waitMs = 2500 }) {
     note = "unfilled remainder cancelled";
   }
   const matched = o?.sizeMatched ?? 0;
-  log(`order ${orderId} BUY ${size}@${price} matched ${matched}`);
+  log(`order ${orderId} ${isSell ? "SELL" : "BUY"} ${size}@${price} matched ${matched}`);
   return { ok: true, orderId, status: o?.status ?? resp?.status ?? "unknown", sizeMatched: matched, avgPrice: price, note };
 }
 

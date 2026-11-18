@@ -71,6 +71,16 @@ STRATEGIES: dict[str, dict] = {
 
 FAVOURITE_KEYS = {"K", "L", "M"}
 
+STRATEGIES["O"] = {
+    "name": "Smart Future Trading",
+    "description": "Watches fast exchange prices (Binance, Coinbase, OKX, Hyperliquid) that move a moment before "
+                   "Polymarket. Buys a 3-10c underdog only when the coin has just crossed the real price to beat "
+                   "(60s average at the start) and the model's chance beats price + fee. Sells at 90c if reached.",
+    "params": {"min_price": 0.03, "max_price": 0.10, "entry_min_secs": 30.0, "entry_max_secs": 120.0,
+               "min_edge": 0.03, "model_max": 0.60, "require_cross": True, "use_fast": True,
+               "take_profit_price": 0.90, "min_liquidity_usd": 1.0, "stake_usd": 1.0},
+}
+
 STRATEGIES["N"] = {
     "name": "Smart Long Shot",
     "description": "Buy the cheap side only when a price model says the real flip chance beats price + fee.",
@@ -79,7 +89,7 @@ STRATEGIES["N"] = {
 }
 
 
-def flip_probability(st: MarketState, side: str) -> float | None:
+def flip_probability(st: MarketState, side: str, use_fast: bool = False) -> float | None:
     """Model chance that `side` wins at settlement.
 
     Settlement compares the Chainlink 60-second TWAP at close with the opening price.
@@ -90,7 +100,11 @@ def flip_probability(st: MarketState, side: str) -> float | None:
     import math
     from scipy.stats import norm
     f = st.features
-    spot, op, vol, twap = f.get("spot"), st.open_price, f.get("vol_30s"), f.get("twap60_est")
+    spot, op, vol = f.get("spot"), st.open_price, f.get("vol_30s")
+    if use_fast and f.get("fast_spot"):
+        spot = f["fast_spot"]
+    # part of the final 60s average already fixed = average of the settlement window so far
+    twap = f.get("twap_window") or f.get("twap60_est")
     t = st.secs_remaining
     if not spot or not op or vol is None or t <= 0:
         return None
@@ -156,6 +170,8 @@ def evaluate(key: str, st: MarketState, params: dict, ctx: StrategyContext) -> t
         return _evaluate_favourite(key, st, p, ctx)
     if key == "N":
         return _evaluate_smart_longshot(st, p)
+    if key == "O":
+        return _evaluate_future(st, p)
     if key == "F":
         t = float(p["entry_t"])
         if abs(secs - t) > 0.5:
@@ -363,6 +379,65 @@ def _evaluate_smart_longshot(st: MarketState, p: dict) -> tuple[Decision | None,
     cost = shares * breakeven
     exp = {"max_cost": cost, "payout_if_win": shares, "net_if_win": shares - cost, "net_if_loss": -cost,
            "breakeven_prob": breakeven, "model_win_prob": pw,
+           "expected_value": pw * (shares - cost) - (1 - pw) * cost}
+    return Decision(side=dog, limit_price=limit, shares=shares, order_type=p["order_type"], tif=p["tif"],
+                    decision_ask=ask, reasons=reasons, expected=exp), None
+
+
+def _evaluate_future(st: MarketState, p: dict) -> tuple[Decision | None, str | None]:
+    """Smart Future Trading (O).
+
+    Backtest on 708 recorded markets with the corrected price to beat (60s TWAP at start):
+    underdog 3-10c, 30-120s left, model chance in [price+fee+3pt, 60%] -> 164 trades, 16 wins
+    (9.8% vs 7.6% needed), positive in both halves of the data. Above 60% the market was right
+    (our feed vs Chainlink mismatch), below 3c and inside the last 30s it lost money.
+    """
+    secs = st.secs_remaining
+    if not (p["entry_min_secs"] <= secs <= p["entry_max_secs"]):
+        return None, "outside entry window"
+    if not st.book_ok or st.underdog is None:
+        return None, "no underdog"
+    f = st.features
+    if not f.get("ptb_exact"):
+        return None, "real price to beat not known yet (needs 60s of price history before the start)"
+    dog = st.underdog
+    ask = st.ask(dog)
+    if ask is None or ask > p["max_price"] + 1e-12 or ask < p["min_price"] - 1e-12:
+        return None, f"underdog ask {ask} outside {p['min_price']}-{p['max_price']}"
+    op = st.open_price
+    spot = (f.get("fast_spot") if p.get("use_fast") else None) or f.get("spot")
+    if not op or not spot:
+        return None, "missing price data"
+    w = min(1.0, max(0.0, secs / 60.0))
+    known = f.get("twap_window") or spot
+    proj = (1 - w) * known + w * spot if secs < 60 else spot
+    sign = 1 if dog == "UP" else -1
+    crossed = sign * (spot - op) >= 0 and sign * (proj - op) >= 0
+    if p.get("require_cross") and not crossed:
+        return None, "coin has not crossed the price to beat toward the underdog"
+    pw = flip_probability(st, dog, use_fast=bool(p.get("use_fast")))
+    if pw is None:
+        return None, "missing volatility data"
+    if pw > p["model_max"]:
+        return None, f"model {pw:.0%} too far from market price — feed likely disagrees with Chainlink, skipped"
+    tick = st.tick_size or 0.01
+    limit = _round_tick(min(0.99, ask + p["limit_offset_ticks"] * tick), tick)
+    shares = size_order(p["stake_usd"], limit, st.min_order_size)
+    fee_ps = taker_fee(shares, limit, st.fee) / shares if shares else 0.0
+    breakeven = limit + fee_ps
+    if pw - breakeven < p["min_edge"]:
+        return None, f"model chance {pw:.1%} < price+fee {breakeven:.1%} + margin"
+    liq = st.ask_liquidity_usd(dog, max_price=limit)
+    if liq < p["min_liquidity_usd"]:
+        return None, f"liquidity ${liq:.2f} too low"
+    cost = shares * breakeven
+    tp = float(p.get("take_profit_price") or 0)
+    reasons = {"dog": dog, "dog_ask": ask, "model_win_prob": pw, "breakeven": breakeven, "edge": pw - breakeven,
+               "price_to_beat": op, "spot": f.get("spot"), "fast_spot": f.get("fast_spot"),
+               "fast_sources": f.get("fast_sources"), "projected_final_avg": proj, "crossed": crossed,
+               "secs_remaining": secs, "liq_usd": liq, "take_profit_price": tp}
+    exp = {"max_cost": cost, "payout_if_win": shares, "net_if_win": shares - cost, "net_if_loss": -cost,
+           "breakeven_prob": breakeven, "model_win_prob": pw, "take_profit_price": tp,
            "expected_value": pw * (shares - cost) - (1 - pw) * cost}
     return Decision(side=dog, limit_price=limit, shares=shares, order_type=p["order_type"], tif=p["tif"],
                     decision_ask=ask, reasons=reasons, expected=exp), None

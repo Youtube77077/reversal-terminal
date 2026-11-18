@@ -27,6 +27,13 @@ PARAM_DOCS = {
 }
 
 STRATEGY_DOCS = {
+    "O": {"side": "underdog", "summary": "Buys a 3-10c underdog only when fast exchange prices show the coin has just crossed the real price to beat; sells at 90c if reached.",
+          "how": ["Watches Binance, Coinbase, OKX and Hyperliquid — they move a moment before Polymarket's settlement feed.",
+                  "With 30-120s left and the underdog at 3-10c, it buys only if the coin is now on the underdog's side of the",
+                  "real price to beat (the 60-second average at the start) and the model's chance beats price + fee by 3 points.",
+                  "If the price later reaches 90c it sells early; otherwise it holds to the end."],
+          "idea": "Catch the moment the coin has crossed but Polymarket's price hasn't caught up yet.",
+          "risk": "Most trades lose $1. Wins pay roughly 9-30x. Backtest: 164 trades in ~11h, 16 wins, positive overall, but 16 wins is a small sample."},
     "N": {"side": "underdog", "summary": "Buys the cheap side ONLY when the real chance of a flip is higher than its price + fee.",
           "how": ["Each second, estimates the flip chance from: distance to the start price, current volatility,",
                   "seconds left, and Polymarket's 60-second-average settlement rule.",

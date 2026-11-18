@@ -12,13 +12,17 @@ import { useWallet } from "@/lib/wallet";
 const CHOICES = [
   { key: "K", name: "Safe favourite", tag: "Recommended", text: "In the last 30 seconds, buys the side that's almost sure to win (95%+). Small wins, rare big losses." },
   { key: "M", name: "Smart favourite", tag: "Data-driven", text: "Like Safe favourite, but only trades when past results prove it beats the fees. Trades less often." },
+  { key: "O", name: "Smart future trading", tag: "New · fast data", text: "Watches Binance, Coinbase, OKX & Hyperliquid, which move before Polymarket. Buys a 3–10¢ underdog only right after the coin crosses the real price to beat, and sells at 90¢ if it gets there." },
   { key: "N", name: "Smart long shot", tag: "Experimental", text: "Buys the cheap side only when a real flip looks likely and beats price + fee. Backtests lost money, so it now trades very rarely. For testing only." },
 ];
 const COINS = ["BTC", "ETH", "SOL", "XRP", "DOGE", "HYPE", "BNB"];
-const DEFAULTS: Record<string, { max_price: number; min_price: number; entry_max_secs: number; min_edge: number; stake_usd: number }> = {
+type Cfg = { max_price: number; min_price: number; entry_max_secs: number; min_edge: number; stake_usd: number;
+  entry_min_secs?: number; take_profit_price?: number; require_cross?: boolean };
+const DEFAULTS: Record<string, Cfg> = {
   K: { max_price: 0.98, min_price: 0.90, entry_max_secs: 30, min_edge: 0, stake_usd: 5 },
   M: { max_price: 0.99, min_price: 0.85, entry_max_secs: 30, min_edge: 0, stake_usd: 5 },
   N: { max_price: 0.15, min_price: 0, entry_max_secs: 45, min_edge: 0.03, stake_usd: 1 },
+  O: { max_price: 0.10, min_price: 0.03, entry_max_secs: 120, entry_min_secs: 30, min_edge: 0.03, stake_usd: 1, take_profit_price: 0.90, require_cross: true },
 };
 const LOSS = [{ v: 25, l: "¼ of it" }, { v: 50, l: "Half" }, { v: 100, l: "All of it" }];
 const WIN = [{ v: 0, l: "Never" }, { v: 50, l: "+50%" }, { v: 100, l: "Double" }, { v: 200, l: "Triple" }];
@@ -33,7 +37,7 @@ export default function BotPage() {
   const [strat, setStrat] = useState("K");
   const [coins, setCoins] = useState<string[]>(COINS);
   const [adv, setAdv] = useState(false);
-  const [cfg, setCfg] = useState(DEFAULTS.K);
+  const [cfg, setCfg] = useState<Cfg>(DEFAULTS.K);
   useEffect(() => setCfg(DEFAULTS[strat] || DEFAULTS.K), [strat]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -154,6 +158,15 @@ export default function BotPage() {
                     <Num label="Only last … seconds" value={cfg.entry_max_secs} onChange={(v) => setCfg({ ...cfg, entry_max_secs: v })} />
                     <Num label="$ per trade" value={cfg.stake_usd} onChange={(v) => setCfg({ ...cfg, stake_usd: v })} />
                     {strat !== "K" && <Num label="Min edge (points %)" value={Math.round(cfg.min_edge * 100)} onChange={(v) => setCfg({ ...cfg, min_edge: v / 100 })} />}
+                    {strat === "O" && <>
+                      <Num label="Not in last … seconds" value={cfg.entry_min_secs ?? 30} onChange={(v) => setCfg({ ...cfg, entry_min_secs: v })} />
+                      <Num label="Sell early at (¢, 0 = hold)" value={Math.round((cfg.take_profit_price ?? 0) * 100)} onChange={(v) => setCfg({ ...cfg, take_profit_price: v / 100 })} />
+                      <button onClick={() => setCfg({ ...cfg, require_cross: !cfg.require_cross })}
+                        className={clsx("col-span-2 rounded-2xl px-4 py-3 text-left text-[13px] font-bold", cfg.require_cross ? "bg-black text-white" : "bg-black/10")}>
+                        {cfg.require_cross ? "✓ " : ""}Only buy after the coin crosses the price to beat
+                        <span className="block text-[11px] font-semibold opacity-70">The coin must already be on the underdog's side of the 60-second average at the start — not just moving toward it.</span>
+                      </button>
+                    </>}
                   </div>
                 )}
                 {err && <div className="mt-4 rounded-2xl bg-black/15 px-4 py-3 text-center text-[14px] font-semibold">{err}</div>}

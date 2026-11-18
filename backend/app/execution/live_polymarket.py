@@ -71,6 +71,20 @@ class PolymarketLiveAdapter(ExecutionAdapter):
         rep.reason = (rep.reason or "") + f" [order {d.get('orderId')}]"
         return rep
 
+    async def sell(self, token_id: str, price: float, size: float, wallet: str = "main") -> dict:
+        """Sell shares we hold (early exit): fill-and-kill at ``price`` or better."""
+        ok, why = self.available()
+        if not ok:
+            return {"ok": False, "error": why}
+        body = {"wallet": wallet, "tokenId": token_id, "side": "SELL", "price": price, "size": size,
+                "mode": "limit_fak", "waitMs": 2500}
+        try:
+            async with httpx.AsyncClient(timeout=30) as c:
+                r = await c.post(f"{self.settings.executor_url}/order", json=body, headers=self._headers())
+            return r.json()
+        except Exception as e:
+            return {"ok": False, "error": f"executor error: {e!r}"}
+
     async def cancel(self, order_ref: str) -> bool:
         async with httpx.AsyncClient(timeout=15) as c:
             r = await c.post(f"{self.settings.executor_url}/cancel", json={"orderId": order_ref}, headers=self._headers())

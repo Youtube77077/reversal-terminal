@@ -35,7 +35,7 @@ from ..models import (
     SimOrder,
     Transaction,
 )
-from ..providers.polymarket.fees import FeeSchedule
+from ..providers.polymarket.fees import FeeSchedule, taker_fee
 from ..services.collector import db_write_lock
 from ..services.events import record_event
 from ..services.market_state import MarketState
@@ -113,6 +113,7 @@ class TradingEngine:
         if not accounts:
             return
         await asyncio.to_thread(self._refresh_hist)
+        await self._check_exits(accounts, {st.market_id: st for st in states})
         ctx = StrategyContext(hist_lookup=self.hist_lookup)
         for acct in accounts:
             if acct["paused"] or acct["halted_reason"]:
@@ -424,6 +425,101 @@ class TradingEngine:
                         order.reserved_amount = 0.0
                         self.resting.pop(oid, None)
 
+    # ================================================================ early exits (take profit)
+    async def _check_exits(self, accounts: list[dict], states: dict[int, MarketState]) -> None:
+        """Sell an open position early when its best bid reaches the strategy's take_profit_price."""
+        from ..strategies.library import default_params
+        wanted = {}
+        for a in accounts:
+            p = {**default_params(a["strategy_key"]), **json.loads(a["params_json"] or "{}")}
+            tp = float(p.get("take_profit_price") or 0)
+            if 0 < tp < 1:
+                wanted[a["id"]] = tp
+        if not wanted:
+            return
+        todo = await asyncio.to_thread(self._exit_candidates, wanted, states)
+        for txid, mode, st, side, shares, price, token, wallet in todo:
+            key = ("exit", txid)
+            if key in self.inflight:
+                continue
+            self.inflight.add(key)
+            try:
+                if mode == "live":
+                    if not self.live_armed:
+                        continue
+                    res = await self.live.sell(token, price, shares, wallet)
+                    if not res.get("ok"):
+                        record_event("order_simulated", f"{st.asset}: early SELL failed - {res.get('error')}",
+                                     level="WARNING", persist=False, data={"tx": txid})
+                        continue
+                    matched = float(res.get("sizeMatched") or 0)
+                    if matched <= 0:
+                        continue
+                    fills = [(price, matched)]
+                else:
+                    fills = _bids_fills(st.bids(side), shares, price)
+                    if not fills:
+                        continue
+                await asyncio.to_thread(self._book_exit, txid, fills, st)
+            finally:
+                self.inflight.discard(key)
+
+    def _exit_candidates(self, wanted: dict, states: dict) -> list:
+        from ..services.wallets import wallet_key_for_account
+        out = []
+        with session_scope() as s:
+            txs = s.scalars(select(Transaction).where(
+                Transaction.account_id.in_(list(wanted)), Transaction.source == "live",
+                Transaction.status.in_(("filled", "partially_filled")), Transaction.filled_shares > 0,
+                Transaction.market_id.in_(list(states)))).all()
+            for tx in txs:
+                st = states.get(tx.market_id)
+                if st is None or st.secs_remaining <= 1.0:
+                    continue
+                bids = st.bids(tx.outcome)
+                tp = wanted[tx.account_id]
+                if not bids or bids[0][0] < tp - 1e-9:
+                    continue
+                acct = s.get(Account, tx.account_id)
+                out.append((tx.id, tx.mode, st, tx.outcome, tx.filled_shares, tp, st.token(tx.outcome),
+                            wallet_key_for_account(s, acct)))
+        return out
+
+    def _book_exit(self, txid: str, fills: list, st: MarketState) -> None:
+        with db_write_lock, session_scope() as s:
+            tx = s.get(Transaction, txid)
+            if tx is None or tx.status not in ("filled", "partially_filled"):
+                return
+            acct = s.get(Account, tx.account_id)
+            sold = min(sum(q for _, q in fills), tx.filled_shares)
+            gross = sum(p * q for p, q in fills)
+            fee = sum(taker_fee(q, p, st.fee) for p, q in fills)
+            proceeds = round(gross - fee, 6)
+            avg = gross / sold if sold else 0.0
+            accounting.credit_settlement(s, acct, proceeds, tx.id,
+                                         f"sold {sold:g} {tx.outcome} early @ {avg:.3f} (fee {fee:.4f})")
+            if fee > 0:
+                s.add(FeeRecord(transaction_id=tx.id, kind="trading", amount=round(fee, 6),
+                                estimated=st.fee.estimated, formula="early-exit sell: " + st.fee.describe()))
+            tx.trading_fee = round(tx.trading_fee + fee, 6)
+            tx.exit_proceeds = round((tx.exit_proceeds or 0.0) + proceeds, 6)
+            tx.exit_price = avg
+            tx.filled_shares = round(tx.filled_shares - sold, 6)
+            tx.potential_payout = tx.filled_shares
+            if tx.filled_shares <= 1e-6:
+                tx.filled_shares = 0.0
+                tx.gross_payout = tx.exit_proceeds
+                tx.net_profit = round(tx.exit_proceeds - tx.total_cost, 6)
+                tx.roi = tx.net_profit / tx.total_cost if tx.total_cost else None
+                tx.status = "won" if tx.net_profit > 0 else "lost"
+                tx.settlement_outcome = "SOLD"
+                tx.settled_ts = now_ms()
+                tx.holding_seconds = (tx.settled_ts - (tx.entry_ts or tx.created_ts)) / 1000.0
+            tx.notes = ((tx.notes or "") + f" Sold {sold:g} early at {avg:.2f} for ${proceeds:.2f}.").strip()
+            accounting.snapshot_balance(s, acct, self.mark_prices(s, acct.id))
+        record_event("trade_settled", f"{st.asset} {txid} SOLD EARLY @ {avg:.2f} -> ${proceeds:.2f}",
+                     data={"tx": txid, "status": "sold", "proceeds": proceeds})
+
     # ================================================================ settlement
     async def settle_market(self, market_id: int, winner: str) -> None:
         self.loop = asyncio.get_running_loop()
@@ -455,10 +551,11 @@ class TradingEngine:
                 acct = s.get(Account, tx.account_id)
                 payout = tx.filled_shares if tx.outcome == winner else 0.0
                 tx.settlement_outcome = winner
-                tx.gross_payout = round(payout, 6)
-                tx.net_profit = round(payout - tx.total_cost, 6)
+                gross = payout + (tx.exit_proceeds or 0.0)      # shares sold early were credited already
+                tx.gross_payout = round(gross, 6)
+                tx.net_profit = round(gross - tx.total_cost, 6)
                 tx.roi = tx.net_profit / tx.total_cost if tx.total_cost else None
-                tx.status = "won" if payout > 0 else "lost"
+                tx.status = "won" if tx.net_profit > 0 else "lost"
                 tx.settled_ts = now_ms()
                 tx.holding_seconds = (tx.settled_ts - (tx.entry_ts or tx.created_ts)) / 1000.0
                 if payout > 0 and tx.mode == "live" and m is not None:
@@ -539,3 +636,15 @@ def fee_for_market(m: Market) -> FeeSchedule:
         return FeeSchedule(verified=False)
     return FeeSchedule(rate=m.fee_rate, exponent=m.fee_exponent or 1.0, taker_only=bool(m.fee_taker_only),
                        rebate_rate=m.fee_rebate_rate or 0.0, fee_type=m.fee_type, verified=bool(m.fee_verified))
+
+
+def _bids_fills(bids, shares: float, min_price: float):
+    """Walk the bid side for ``shares`` using only levels >= min_price. None unless fully sellable."""
+    left, out = shares, []
+    for p, q in bids:
+        if p < min_price - 1e-9 or left <= 1e-9:
+            break
+        take = min(q, left)
+        out.append((p, take))
+        left -= take
+    return out if left <= 1e-6 else None
