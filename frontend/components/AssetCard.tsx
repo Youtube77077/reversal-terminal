@@ -2,12 +2,14 @@
 import clsx from "clsx";
 import Link from "next/link";
 import { dur, isNum, pct, price, spot } from "@/lib/format";
+import { useRealOdds, verdict } from "@/lib/realodds";
 import { Pill, statusKind } from "./ui";
 
 export default function AssetCard({ asset, name, state, status, detail }: {
   asset: string; name: string; state: any; status?: string; detail?: string | null;
 }) {
   const s = state;
+  const real = useRealOdds();
   const stale = s?.stale || (s && Date.now() - s.server_ts > 5000);
   const kind = !s ? statusKind(status) : stale ? "OFFLINE" : statusKind(status);
   const fav = s?.favourite;
@@ -55,6 +57,23 @@ export default function AssetCard({ asset, name, state, status, detail }: {
               );
             })}
           </div>
+          {fav && isNum(s.fav_prob) && (() => {
+            const poly = 1 - s.fav_prob;
+            const r = real(s.fav_prob, secs);
+            const v = verdict(poly, r);
+            return (
+              <div className="rounded-2xl bg-panel2/70 px-3 py-2.5">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-faint">Chance the underdog ({s.underdog}) wins</div>
+                <div className="mt-1 grid grid-cols-2 gap-2">
+                  <div><div className="text-[11px] text-dim">Polymarket says</div><div className="num text-[18px] font-bold">{pct(poly, 1)}</div></div>
+                  <div><div className="text-[11px] text-dim">Really happens</div>
+                    <div className={clsx("num text-[18px] font-bold", r && (r.rate > poly ? "text-warn" : "text-up"))}>{r ? pct(r.rate, 1) : "—"}</div>
+                    {r && <div className="text-[10px] text-faint">from {r.n} markets at {s.fav_prob >= 0.995 ? "99.5%+" : pct(s.fav_prob, 0)} with ~{r.t}s left</div>}</div>
+                </div>
+                <div className={clsx("mt-1 text-[12px] font-semibold", v.tone === "up" ? "text-up" : v.tone === "warn" ? "text-warn" : "text-dim")}>{v.text}</div>
+              </div>
+            );
+          })()}
           <div className="mono grid grid-cols-2 gap-x-3 gap-y-0.5 text-2xs">
             <span className="text-faint">spot ({s.spot_source})</span><span className="text-right text-ink">{spot(s.spot)}</span>
             <span className="text-faint">threshold (open)</span><span className="text-right text-ink">{spot(s.open_price)}</span>

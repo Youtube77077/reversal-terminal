@@ -10,6 +10,7 @@ import { useEffect, useState } from "react";
 import { post, usePoll } from "@/lib/api";
 import { useLive } from "@/lib/live";
 import { isNativeApp, useTheme } from "@/lib/theme";
+import Explain from "./Explain";
 
 const TABS = [
   { href: "/", label: "Home", icon: Wallet },
@@ -129,7 +130,8 @@ export default function Shell({ children }: { children: React.ReactNode }) {
       )}
       <main className={clsx("lg:pl-[248px]", live && "pt-6")}>
         {title && norm !== "/" && <h1 className="title-xl mx-auto hidden max-w-[1600px] px-8 pt-8 lg:block">{title}</h1>}
-        {children}
+        {!onBot && <Explain />}
+        <div key={norm} className="animate-page">{children}</div>
       </main>
 
       {/* ---------------- floating 5-tab bar (mobile) ---------------- */}
