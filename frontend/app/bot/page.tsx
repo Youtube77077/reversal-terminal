@@ -1,243 +1,196 @@
 "use client";
 import clsx from "clsx";
-import { Check, ChevronDown, Delete } from "lucide-react";
+import { Check, ChevronRight, Delete } from "lucide-react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useMemo, useState } from "react";
-import { post, usePoll } from "@/lib/api";
-import { signedUsd, usd } from "@/lib/format";
+import { useEffect, useMemo, useState } from "react";
+import { post, qs, usePoll } from "@/lib/api";
+import { price, signedUsd, usd } from "@/lib/format";
 
-type Unit = "percent" | "amount";
+/* The 3 simple strategy choices (the rest live in Strategy Lab). */
+const CHOICES = [
+  { key: "K", name: "Safe favourite", tag: "Recommended", text: "In the last 30 seconds, buys the side that's almost sure to win (95%+). Small wins, rare big losses." },
+  { key: "M", name: "Smart favourite", tag: "Data-driven", text: "Like Safe favourite, but only trades when past results prove it beats the fees. Trades less often." },
+  { key: "A", name: "Long shot", tag: "High risk", text: "Buys the cheap side for a few cents hoping for a last-second flip. Usually loses; one win pays ~20–50×." },
+];
+const LOSS = [{ v: 25, l: "¼ of it" }, { v: 50, l: "Half" }, { v: 100, l: "All of it" }];
+const WIN = [{ v: 0, l: "Never" }, { v: 50, l: "+50%" }, { v: 100, l: "Double" }, { v: 200, l: "Triple" }];
 
 export default function BotPage() {
-  return <Suspense><Bot /></Suspense>;
-}
-
-function Sheet({ open, onClose, title, children }: { open: boolean; onClose: () => void; title: string; children: React.ReactNode }) {
-  if (!open) return null;
-  return (
-    <div className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm animate-fade" onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()}
-        className="safe-bottom absolute inset-x-0 bottom-0 mx-auto max-h-[85vh] max-w-[560px] overflow-y-auto rounded-t-4xl bg-bg px-5 pt-3 text-ink animate-sheet lg:bottom-auto lg:top-1/2 lg:-translate-y-1/2 lg:rounded-4xl lg:pb-6">
-        <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-line2 lg:hidden" />
-        <h3 className="mb-3 text-[24px] font-bold tracking-tight">{title}</h3>
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function Bot() {
-  const sp = useSearchParams();
   const { data: accounts, reload } = usePoll<any[]>("/api/accounts", 4000);
-  const { data: strategies } = usePoll<any[]>("/api/strategies", 0);
   const { data: summary } = usePoll<any>("/api/summary", 5000);
-  const [aid, setAid] = useState<number | null>(sp.get("acct") ? Number(sp.get("acct")) : null);
-  const [unit, setUnit] = useState<Unit>("percent");
-  const [val, setVal] = useState("25");
-  const [sl, setSl] = useState(100);
-  const [tpMode, setTpMode] = useState<"off" | "percent" | "amount">("off");
-  const [tpVal, setTpVal] = useState("100");
-  const [strat, setStrat] = useState<string | null>(null);
-  const [sheet, setSheet] = useState<null | "acct" | "sl" | "tp" | "strat">(null);
+  const [real, setReal] = useState(false);
+  const [val, setVal] = useState("20");
+  const [loss, setLoss] = useState(100);
+  const [win, setWin] = useState(0);
+  const [strat, setStrat] = useState("K");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (aid === null && accounts?.length) setAid(accounts.find((a) => a.mode !== "live")?.id ?? accounts[0].id);
-  }, [accounts, aid]);
-  const acct = accounts?.find((a) => a.id === aid);
-  const ss = acct?.session;
-  const runningSession = ss?.active && ss.state === "running" && !acct?.halted_reason;
-  const ended = ss?.active && !runningSession;
-  useEffect(() => { if (acct && !strat) setStrat(acct.strategy_key); }, [acct, strat]);
-  const balance = acct?.summary?.equity ?? 0;
-  const num = Number(val || 0);
-  const budget = unit === "percent" ? (balance * num) / 100 : num;
-  const tpTarget = tpMode === "percent" ? budget * Number(tpVal || 0) / 100 : tpMode === "amount" ? Number(tpVal || 0) : null;
-  const stratObj = strategies?.find((s) => s.key === strat);
-  const isLive = acct?.mode === "live";
-  const liveBlocked = isLive && !summary?.live_armed;
+  const liveAcct = accounts?.find((a) => a.mode === "live" && !a.archived);
+  // the paper account used by the simple screen = first paper account with the chosen strategy
+  const paperAcct = accounts?.find((a) => a.mode !== "live" && a.strategy_key === strat);
+  const running = (accounts || []).find((a) => a.session?.active && !a.archived && (real ? a.mode === "live" : a.mode !== "live"));
+  const acct = running || (real ? liveAcct : paperAcct);
+  const ss = running?.session;
+  const armed = !!summary?.live_armed;
+  const budget = Number(val || 0);
+  const liveBalance = liveAcct?.summary?.equity ?? 0;
 
   const press = (k: string) => {
     setErr(null);
     setVal((v) => {
       if (k === "<") return v.length > 1 ? v.slice(0, -1) : "0";
       if (k === ".") return v.includes(".") ? v : v + ".";
-      const nv = v === "0" ? k : v + k;
-      if (nv.split(".")[1]?.length > 2) return v;
-      if (unit === "percent" && Number(nv) > 100) return "100";
-      return nv.length > 7 ? v : nv;
+      const n = v === "0" ? k : v + k;
+      if (n.split(".")[1]?.length > 2 || n.length > 7) return v;
+      return n;
     });
   };
 
   const start = async () => {
     if (!acct) return;
+    if (budget < 1) return setErr("Budget must be at least $1");
     setBusy(true); setErr(null);
     try {
+      if (!real) await post(`/api/accounts/${acct.id}/reset`, { balance: budget });   // practice: account = exactly your budget
       await post(`/api/accounts/${acct.id}/session/start`, {
-        risk_budget_mode: unit, risk_budget_value: num, stop_loss_pct: sl, take_profit_mode: tpMode,
-        take_profit_value: tpMode === "off" ? 0 : Number(tpVal || 0), strategy_key: strat,
+        risk_budget_mode: real ? "amount" : "percent", risk_budget_value: real ? budget : 100,
+        stop_loss_pct: loss, take_profit_mode: win ? "percent" : "off", take_profit_value: win, strategy_key: strat,
       });
       (window as any).ReversalNative?.haptic("success");
-      if (navigator.vibrate) navigator.vibrate(20);
       reload();
     } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
   };
   const stop = async () => {
-    if (!acct) return;
+    if (!running) return;
     setBusy(true);
-    try { await post(`/api/accounts/${acct.id}/session/stop`); reload(); } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
+    try { await post(`/api/accounts/${running.id}/session/stop`); reload(); } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
   };
-
-  const display = useMemo(() => (unit === "percent" ? `${val}%` : `$${val}`), [unit, val]);
 
   return (
     <div className="min-h-[calc(100vh-80px)] bg-cash text-oncash">
-      <div className="mx-auto flex min-h-[calc(100vh-80px)] max-w-[560px] flex-col px-5 pb-32 pt-2 animate-rise lg:pb-10 lg:pt-10">
-        {/* top controls */}
-        <div className="flex items-center justify-between gap-2">
-          <button onClick={() => setSheet("acct")} className="flex min-w-0 items-center gap-2 rounded-full bg-black/10 px-4 py-2.5 text-[14px] font-semibold active:scale-95">
-            <span className={clsx("h-2 w-2 shrink-0 rounded-full", isLive ? "bg-[#7a0000]" : "bg-black/60")} />
-            <span className="truncate">{acct ? acct.name : "Select account"}</span><ChevronDown size={15} className="shrink-0" />
-          </button>
-          <div className="flex rounded-full bg-black/10 p-1 text-[14px] font-bold">
-            {(["amount", "percent"] as Unit[]).map((u) => (
-              <button key={u} disabled={runningSession} onClick={() => { setUnit(u); setVal(u === "percent" ? "25" : "5"); }}
-                className={clsx("rounded-full px-4 py-1.5 transition", unit === u ? "bg-black text-cash" : "text-oncash/70")}>{u === "amount" ? "$" : "%"}</button>
-            ))}
-          </div>
+      <div className="mx-auto max-w-[520px] px-5 pb-32 pt-2 animate-rise lg:pb-10 lg:pt-8">
+        {/* 1. practice / real */}
+        <div className="flex rounded-full bg-black/10 p-1 text-[15px] font-bold">
+          {[false, true].map((r) => (
+            <button key={String(r)} disabled={!!running} onClick={() => setReal(r)}
+              className={clsx("flex-1 rounded-full py-2.5 transition", real === r ? "bg-black text-white" : "opacity-70")}>
+              {r ? "Real money" : "Practice"}</button>
+          ))}
         </div>
 
-        {runningSession || ended ? (
-          <div className="mt-8 flex flex-1 flex-col">
-            <div className="text-center text-[15px] font-semibold opacity-70">{runningSession ? "Bot running" : "Bot stopped"} · {isLive ? "REAL MONEY" : "paper"}</div>
-            <div className={clsx("money mt-2 text-center text-[72px]")}>{signedUsd(ss.realized_pnl)}</div>
-            <div className="mt-1 text-center text-[15px] opacity-70">{acct?.halted_reason || `session P&L · strategy ${acct?.strategy_key}`}</div>
-            <div className="mt-8 space-y-3 rounded-4xl bg-black/10 p-5 text-[15px] font-semibold">
-              <Bar label="Risk budget used" value={ss.budget_used_pct} left={`${usd(ss.loss_so_far + ss.open_at_risk)} of ${usd(ss.stop_loss_limit)}`} />
-              {ss.take_profit_target != null && <Bar label="Take profit" value={ss.tp_progress_pct} left={`${usd(Math.max(0, ss.realized_pnl))} of ${usd(ss.take_profit_target)}`} />}
-              <div className="grid grid-cols-3 gap-2 pt-2 text-center">
-                <Mini k="Budget" v={usd(ss.risk_budget)} /><Mini k="Stop loss" v={`${ss.stop_loss_pct}%`} />
-                <Mini k="Open risk" v={usd(ss.open_at_risk)} />
-              </div>
-            </div>
-            <div className="mt-auto space-y-3 pt-8">
-              <Link href="/activity" className="block rounded-full bg-black/10 py-4 text-center text-[17px] font-bold active:scale-[.98]">View activity</Link>
-              {runningSession
-                ? <button onClick={stop} disabled={busy} className="w-full rounded-full bg-black py-4 text-[17px] font-bold text-white active:scale-[.98]">Stop bot</button>
-                : <button onClick={stop} disabled={busy} className="w-full rounded-full bg-black py-4 text-[17px] font-bold text-white active:scale-[.98]">New session</button>}
-            </div>
-          </div>
-        ) : (
+        {running && ss ? <Running acct={running} ss={ss} busy={busy} onStop={stop} /> : (
           <>
-            <div className="mt-4 text-center text-[15px] font-semibold opacity-70">Risk {unit === "percent" ? "of balance" : "amount"}</div>
-            <div className="money mt-1 text-center text-[76px] min-[400px]:text-[90px] lg:text-[110px]">{display}</div>
-            <div className="text-center text-[15px] font-semibold opacity-75">
-              {unit === "percent" ? `= ${usd(budget)} of ${usd(balance)}` : `of ${usd(balance)} balance`}
-            </div>
-            <button onClick={() => setSheet("strat")} className="mx-auto mt-4 flex items-center gap-1 rounded-full bg-black/10 px-4 py-2 text-[14px] font-semibold active:scale-95">
-              Strategy {strat} · {stratObj?.name ?? "…"}<ChevronDown size={15} />
-            </button>
-            <div className="mt-4 grid grid-cols-3 gap-y-1 text-center">
-              {["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "<"].map((k) => (
-                <button key={k} onClick={() => press(k)} className="rounded-2xl py-2.5 text-[28px] font-semibold transition active:scale-90 active:bg-black/10 min-[400px]:py-3.5">
-                  {k === "<" ? <Delete className="mx-auto" size={28} /> : k === "." ? "," : k}
-                </button>
-              ))}
-            </div>
-            <div className="mt-4 grid grid-cols-2 gap-3">
-              <button onClick={() => setSheet("sl")} className="rounded-full bg-black/10 py-4 text-[16px] font-bold active:scale-[.98]">Stop loss {sl}%</button>
-              <button onClick={() => setSheet("tp")} className="rounded-full bg-black/10 py-4 text-[16px] font-bold active:scale-[.98]">
-                Take profit {tpMode === "off" ? "off" : tpMode === "percent" ? `${tpVal}%` : `$${tpVal}`}</button>
-            </div>
-            {err && <div className="mt-3 rounded-2xl bg-black/15 px-4 py-2 text-center text-[14px] font-semibold">{err}</div>}
-            {liveBlocked ? (
-              <Link href="/live" className="mt-3 block w-full rounded-full bg-black py-4 text-center text-[17px] font-bold text-white">Arm live trading first</Link>
+            {real && !armed ? (
+              <div className="mt-8 rounded-4xl bg-black/10 p-6 text-center">
+                <div className="text-[20px] font-bold">Real money isn't set up yet</div>
+                <p className="mt-2 text-[14px] opacity-75">Add your Polymarket keys and switch live trading on. It takes 2 minutes.</p>
+                <Link href="/live" className="mt-5 inline-flex items-center gap-1 rounded-full bg-black px-6 py-3.5 text-[16px] font-bold text-white">Set up real money <ChevronRight size={17} /></Link>
+              </div>
             ) : (
-              <button onClick={start} disabled={busy || !acct || num <= 0}
-                className="mt-3 w-full rounded-full bg-black py-4 text-[17px] font-bold text-white transition active:scale-[.98] disabled:opacity-50">
-                {busy ? "Starting…" : `Start bot${isLive ? " · REAL MONEY" : ""}`}</button>
+              <>
+                {/* 2. budget */}
+                <div className="mt-6 text-center text-[15px] font-semibold opacity-75">{real ? "How much may the bot use?" : "Practice budget"}</div>
+                <div className="money mt-1 text-center text-[80px] min-[400px]:text-[92px]">${val}</div>
+                {real && <div className="text-center text-[13px] font-semibold opacity-70">Wallet: {usd(liveBalance)}</div>}
+                <div className="mt-2 grid grid-cols-3 text-center">
+                  {["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "<"].map((k) => (
+                    <button key={k} onClick={() => press(k)} className="rounded-2xl py-2.5 text-[26px] font-semibold transition active:scale-90 active:bg-black/10">
+                      {k === "<" ? <Delete className="mx-auto" size={24} /> : k}</button>
+                  ))}
+                </div>
+
+                {/* 3. stop rules */}
+                <Chips label="Stop if I lose" items={LOSS} value={loss} onChange={setLoss} />
+                <Chips label="Stop if I win" items={WIN} value={win} onChange={setWin} />
+
+                {/* 4. strategy */}
+                <div className="mt-5 text-[13px] font-bold opacity-75">Strategy</div>
+                <div className="mt-2 space-y-2">
+                  {CHOICES.map((c) => (
+                    <button key={c.key} onClick={() => setStrat(c.key)}
+                      className={clsx("flex w-full items-start gap-3 rounded-3xl p-4 text-left transition", strat === c.key ? "bg-black text-white" : "bg-black/10")}>
+                      <span className={clsx("mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full", strat === c.key ? "bg-cash text-black" : "bg-black/15")}>
+                        {strat === c.key && <Check size={14} strokeWidth={3} />}</span>
+                      <span><span className="flex items-center gap-2 text-[16px] font-bold">{c.name}
+                        <span className={clsx("rounded-full px-2 py-0.5 text-[10px] font-bold uppercase", strat === c.key ? "bg-white/15" : "bg-black/10")}>{c.tag}</span></span>
+                        <span className="mt-0.5 block text-[13px] leading-snug opacity-80">{c.text}</span></span>
+                    </button>
+                  ))}
+                </div>
+
+                {err && <div className="mt-4 rounded-2xl bg-black/15 px-4 py-3 text-center text-[14px] font-semibold">{err}</div>}
+                <button onClick={start} disabled={busy || !acct || budget < 1}
+                  className="mt-5 w-full rounded-full bg-black py-4 text-[18px] font-bold text-white transition active:scale-[.98] disabled:opacity-50">
+                  {busy ? "Starting…" : real ? `Start with $${val} real money` : `Start practice with $${val}`}</button>
+                <p className="mt-3 text-center text-[12.5px] font-medium opacity-70">
+                  It can lose at most ${(budget * loss / 100).toFixed(2)}{win ? ` and stops after +$${(budget * win / 100).toFixed(2)}` : ""}.
+                  {!real && " Practice uses fake money on real markets."}
+                </p>
+              </>
             )}
-            <p className="mt-3 text-center text-[12px] font-medium opacity-60">
-              Max loss {usd(budget * sl / 100)}{tpTarget ? ` · stops at +${usd(tpTarget)}` : ""} · open positions count as fully at risk
-            </p>
           </>
         )}
       </div>
-
-      <Sheet open={sheet === "acct"} onClose={() => setSheet(null)} title="Account">
-        {(accounts || []).map((a) => (
-          <button key={a.id} onClick={() => { setAid(a.id); setStrat(a.strategy_key); setSheet(null); }}
-            className="flex w-full items-center gap-3 border-b border-line py-3 text-left last:border-0">
-            <span className={clsx("flex h-11 w-11 items-center justify-center rounded-full text-[16px] font-black", a.mode === "live" ? "bg-down text-white" : "bg-cash text-oncash")}>{a.strategy_key}</span>
-            <span className="min-w-0 flex-1"><span className="block truncate text-[16px] font-semibold">{a.name}</span>
-              <span className="block text-[13px] text-dim">{a.mode === "live" ? "REAL MONEY" : "paper"} · {usd(a.summary.equity)}{a.session?.active ? ` · ${a.session.state.replace(/_/g, " ")}` : ""}</span></span>
-            {a.id === aid && <Check size={18} className="text-accent" />}
-          </button>
-        ))}
-        <Link href="/live" className="mt-3 block py-3 text-center text-[14px] font-semibold text-accent">+ Add live account</Link>
-      </Sheet>
-
-      <Sheet open={sheet === "sl"} onClose={() => setSheet(null)} title="Stop loss">
-        <p className="mb-4 text-[14px] text-dim">Share of the risk budget the bot may lose. 100% = keep trading until the risk budget is $0.</p>
-        <div className="money mb-2 text-center text-[56px]">{sl}%</div>
-        <input type="range" min={5} max={100} step={5} value={sl} onChange={(e) => setSl(Number(e.target.value))} className="w-full" />
-        <div className="mt-4 grid grid-cols-5 gap-2">{[10, 25, 50, 75, 100].map((v) => (
-          <button key={v} onClick={() => setSl(v)} className={clsx("rounded-full py-2.5 text-[14px] font-semibold", sl === v ? "bg-ink text-bg" : "bg-panel")}>{v}%</button>))}</div>
-        <button onClick={() => setSheet(null)} className="mb-4 mt-6 w-full rounded-full bg-cash py-4 text-[16px] font-bold text-oncash">Done · max loss {usd(budget * sl / 100)}</button>
-      </Sheet>
-
-      <Sheet open={sheet === "tp"} onClose={() => setSheet(null)} title="Take profit">
-        <div className="mb-4 grid grid-cols-3 gap-2">
-          {(["off", "percent", "amount"] as const).map((m) => (
-            <button key={m} onClick={() => setTpMode(m)} className={clsx("rounded-full py-2.5 text-[14px] font-semibold", tpMode === m ? "bg-ink text-bg" : "bg-panel")}>
-              {m === "off" ? "Off" : m === "percent" ? "% of budget" : "$ amount"}</button>))}
-        </div>
-        {tpMode !== "off" && (<>
-          <input inputMode="decimal" value={tpVal} onChange={(e) => setTpVal(e.target.value.replace(/[^0-9.]/g, ""))}
-            className="num w-full rounded-2xl bg-panel px-4 py-4 text-center text-[40px] font-semibold outline-none" />
-          <div className="mt-3 flex flex-wrap justify-center gap-2">
-            {(tpMode === "percent" ? [25, 50, 100, 200, 500] : [1, 5, 10, 25, 50]).map((v) => (
-              <button key={v} onClick={() => setTpVal(String(v))} className="rounded-full bg-panel px-4 py-2 text-[14px] font-semibold">{tpMode === "percent" ? `${v}%` : `$${v}`}</button>))}
-          </div>
-        </>)}
-        <p className="mt-4 text-[14px] text-dim">The bot stops once realised session profit reaches {tpTarget ? usd(tpTarget) : "the target"}.</p>
-        <button onClick={() => setSheet(null)} className="mb-4 mt-5 w-full rounded-full bg-cash py-4 text-[16px] font-bold text-oncash">Done</button>
-      </Sheet>
-
-      <Sheet open={sheet === "strat"} onClose={() => setSheet(null)} title="Strategy">
-        {(strategies || []).map((s) => (
-          <button key={s.key} onClick={() => { if (strat === s.key) setSheet(null); setStrat(s.key); }} className="flex w-full items-start gap-3 border-b border-line py-3 text-left last:border-0">
-            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-panel text-[15px] font-black">{s.key}</span>
-            <span className="min-w-0 flex-1"><span className="flex items-center gap-2 text-[16px] font-semibold">{s.name}
-                <span className={clsx("rounded-full px-2 py-0.5 text-[10px] font-bold uppercase", s.docs?.side === "favourite" ? "bg-info/15 text-info" : "bg-warn/15 text-warn")}>
-                  buys {s.docs?.side === "favourite" ? "favourite" : "underdog"}</span></span>
-              <span className="block text-[13px] leading-snug text-dim">{s.docs?.summary || s.description}</span>
-              {s.key === strat && s.docs?.how && (
-                <span className="mt-2 block space-y-1 rounded-2xl bg-panel p-3 text-[12.5px] text-dim animate-fade">
-                  {s.docs.how.map((h: string, i: number) => <span key={i} className="block">• {h}</span>)}
-                  <span className="block pt-1 text-ink">Idea: {s.docs.idea}</span>
-                  <span className="block text-warn">Risk: {s.docs.risk}</span>
-                </span>)}</span>
-            {s.key === strat && <Check size={18} className="mt-2 text-accent" />}
-          </button>
-        ))}
-      </Sheet>
     </div>
   );
 }
 
-function Bar({ label, value, left }: { label: string; value: number | null | undefined; left: string }) {
-  const v = Math.max(0, Math.min(1, value ?? 0));
+function Chips({ label, items, value, onChange }: { label: string; items: { v: number; l: string }[]; value: number; onChange: (v: number) => void }) {
   return (
-    <div>
-      <div className="mb-1.5 flex justify-between text-[14px]"><span>{label}</span><span className="num opacity-70">{left}</span></div>
-      <div className="h-2.5 overflow-hidden rounded-full bg-black/15"><div className="h-full rounded-full bg-black transition-all duration-500" style={{ width: `${v * 100}%` }} /></div>
+    <div className="mt-4">
+      <div className="text-[13px] font-bold opacity-75">{label}</div>
+      <div className="mt-2 flex gap-2">
+        {items.map((i) => (
+          <button key={i.v} onClick={() => onChange(i.v)}
+            className={clsx("flex-1 rounded-full py-2.5 text-[14px] font-bold transition active:scale-95", value === i.v ? "bg-black text-white" : "bg-black/10")}>{i.l}</button>
+        ))}
+      </div>
     </div>
   );
 }
 
-function Mini({ k, v }: { k: string; v: string }) {
-  return <div className="rounded-2xl bg-black/10 py-2.5"><div className="text-[12px] opacity-60">{k}</div><div className="num text-[16px] font-bold">{v}</div></div>;
+function Running({ acct, ss, busy, onStop }: { acct: any; ss: any; busy: boolean; onStop: () => void }) {
+  const { data } = usePoll<any>(`/api/transactions${qs({ account_id: acct.id, limit: 30 })}`, 4000);
+  const trades: any[] = data?.rows || [];
+  const done = acct.halted_reason || ss.state !== "running";
+  const left = Math.max(0, ss.stop_loss_limit - ss.loss_so_far - ss.open_at_risk);
+  const msg = useMemo(() => {
+    if (acct.halted_reason) return acct.halted_reason;
+    if (!trades.length) return "Watching the markets… trades happen in the last seconds of each 5-minute market.";
+    return `${trades.length} trade${trades.length > 1 ? "s" : ""} so far`;
+  }, [acct.halted_reason, trades.length]);
+  return (
+    <div className="mt-6">
+      <div className="text-center text-[15px] font-semibold opacity-75">{done ? "Bot stopped" : "Bot is running"} · {acct.mode === "live" ? "REAL MONEY" : "practice"}</div>
+      <div className="money mt-2 text-center text-[68px]">{signedUsd(ss.realized_pnl)}</div>
+      <div className="mt-1 text-center text-[14px] opacity-80">{msg}</div>
+      <div className="mt-6 grid grid-cols-3 gap-2 text-center">
+        <Box k="Budget" v={usd(ss.risk_budget)} /><Box k="In trades" v={usd(ss.open_at_risk)} /><Box k="Can still use" v={usd(left)} />
+      </div>
+      <div className="mt-6 text-[13px] font-bold opacity-75">Where your money went</div>
+      <div className="mt-2 space-y-2">
+        {trades.length === 0 && <div className="rounded-3xl bg-black/10 p-4 text-[14px] opacity-80">No trades yet. Keep the app closed or open — the bot keeps running on the server.</div>}
+        {trades.map((t) => {
+          const won = t.status === "won", lost = t.status === "lost";
+          return (
+            <Link key={t.id} href={`/transactions/view/?id=${t.id}`} className="flex items-center gap-3 rounded-3xl bg-black/10 px-4 py-3 active:scale-[.99]">
+              <span className="flex h-10 w-10 items-center justify-center rounded-full bg-black/15 text-[14px] font-black">{t.asset[0]}</span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-[15px] font-bold">{t.asset} · bought {t.outcome} @ {price(t.entry_price ?? t.limit_price)}</span>
+                <span className="block text-[12.5px] opacity-75">{new Date(t.created_ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · paid {usd(t.total_cost || 0)} · {won ? "won" : lost ? "lost" : t.status === "cancelled" || t.status === "expired" ? "not filled" : "waiting for result"}</span>
+              </span>
+              <span className="num text-[16px] font-bold">{won || lost ? signedUsd(t.net_profit) : "…"}</span>
+            </Link>
+          );
+        })}
+      </div>
+      <button onClick={onStop} disabled={busy} className="mt-6 w-full rounded-full bg-black py-4 text-[18px] font-bold text-white active:scale-[.98]">
+        {done ? "Done — new run" : "Stop bot"}</button>
+    </div>
+  );
+}
+
+function Box({ k, v }: { k: string; v: string }) {
+  return <div className="rounded-2xl bg-black/10 py-3"><div className="text-[12px] font-semibold opacity-70">{k}</div><div className="num text-[17px] font-bold">{v}</div></div>;
 }

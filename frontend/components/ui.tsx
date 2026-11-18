@@ -1,7 +1,8 @@
 "use client";
 import clsx from "clsx";
 import { ChevronDown, ChevronUp, Download, X } from "lucide-react";
-import { ReactNode, useMemo, useState } from "react";
+import { ReactNode, useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { downloadText, toCSV } from "@/lib/api";
 import { isNum, pct } from "@/lib/format";
 
@@ -167,8 +168,11 @@ export function ErrorNote({ error }: { error?: string | null }) {
 }
 
 export function Drawer({ open, onClose, title, children, wide }: { open: boolean; onClose: () => void; title: ReactNode; children: ReactNode; wide?: boolean }) {
-  if (!open) return null;
-  return (
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  if (!open || !mounted) return null;
+  // portal to <body> so animated/transformed parents can never hide the sheet
+  return createPortal(
     <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/60 backdrop-blur-sm animate-fade lg:items-stretch lg:justify-end" onClick={onClose}>
       <div onClick={(e) => e.stopPropagation()}
         className={clsx("max-h-[92vh] w-full overflow-y-auto rounded-t-4xl bg-bg shadow-2xl animate-sheet lg:max-h-none lg:animate-pop lg:rounded-none lg:rounded-l-4xl",
@@ -180,7 +184,8 @@ export function Drawer({ open, onClose, title, children, wide }: { open: boolean
         </div>
         <div className="px-5 pb-10 pt-2">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
