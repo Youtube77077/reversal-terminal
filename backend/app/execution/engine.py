@@ -49,6 +49,11 @@ from .simulator import max_cost, simulate_passive_check
 log = logging.getLogger("reversal.engine")
 
 
+FAST_KEYS = {"O"}          # strategies evaluated by the sub-second loop
+FAST_MS = 200              # 5 checks per second
+FAST_WINDOW_MS = 125_000   # only the last ~2 minutes of each market
+
+
 def new_tx_id() -> str:
     return "TX-" + datetime.now(timezone.utc).strftime("%y%m%d") + "-" + secrets.token_hex(3).upper()
 
@@ -73,6 +78,8 @@ class TradingEngine:
         self.tasks: set[asyncio.Task] = set()
         self._done: set[tuple[int, int]] = set()             # (account, market) at its trade limit
         self._rejected: set[tuple[int, int, str]] = set()   # dedupe identical rejections per market
+        self._fast_accounts: list[dict] = []                 # accounts running a FAST strategy (e.g. O)
+        self._fast_task: asyncio.Task | None = None
 
     # ================================================================ context
     def _refresh_hist(self) -> None:
@@ -110,6 +117,11 @@ class TradingEngine:
             return
         exp = await asyncio.to_thread(self._running_experiment)
         accounts, paused_assets = await asyncio.to_thread(self._load_accounts, exp)
+        self._fast_accounts = [a for a in accounts if a["strategy_key"] in FAST_KEYS
+                               and not a["paused"] and not a["halted_reason"]]
+        self._paused_assets = paused_assets
+        if self._fast_accounts and (self._fast_task is None or self._fast_task.done()):
+            self._fast_task = asyncio.create_task(self._fast_loop(), name="fast-strategy-loop")
         if not accounts:
             return
         await asyncio.to_thread(self._refresh_hist)
@@ -126,6 +138,8 @@ class TradingEngine:
                 key = (acct["id"], st.market_id)
                 if key in self.inflight or key in self._done:
                     continue
+                if acct["strategy_key"] in FAST_KEYS:
+                    continue                      # evaluated 5x per second by _fast_loop
                 decision, _why = evaluate(acct["strategy_key"], st, params, ctx)
                 if decision is None:
                     continue
@@ -424,6 +438,46 @@ class TradingEngine:
                         accounting.release(s, acct, order.reserved_amount, tx.id)
                         order.reserved_amount = 0.0
                         self.resting.pop(oid, None)
+
+    # ================================================================ fast loop (strategy O)
+    async def _fast_loop(self) -> None:
+        """Re-evaluate fast strategies every FAST_MS using the newest order book AND the newest
+        exchange prices at the same instant (the 1-second sampler is too slow for a ~2 s edge)."""
+        ctx = StrategyContext(hist_lookup=self.hist_lookup)
+        while self._fast_accounts:
+            t0 = time.perf_counter()
+            try:
+                if not self.paused:
+                    now = now_ms()
+                    markets = [m for m in list(self.collector.markets.values())
+                               if m.open_ts <= now < m.close_ts and (m.close_ts - now) <= FAST_WINDOW_MS]
+                    if markets:
+                        states = []
+                        for m in markets:
+                            try:
+                                states.append(self.collector._state_for(m, now))
+                            except Exception:
+                                continue
+                        smap = {st.market_id: st for st in states}
+                        await self._check_exits(self._fast_accounts, smap)
+                        for acct in self._fast_accounts:
+                            params = json.loads(acct["params_json"] or "{}")
+                            for st in states:
+                                if st.asset not in acct["assets"] or st.asset in getattr(self, "_paused_assets", set()):
+                                    continue
+                                key = (acct["id"], st.market_id)
+                                if key in self.inflight or key in self._done:
+                                    continue
+                                decision, _why = evaluate(acct["strategy_key"], st, params, ctx)
+                                if decision is None:
+                                    continue
+                                self.inflight.add(key)
+                                t = asyncio.create_task(self._enter(acct["id"], st, decision, acct["exp_id"]))
+                                self.tasks.add(t)
+                                t.add_done_callback(self.tasks.discard)
+            except Exception:
+                log.exception("fast loop error")
+            await asyncio.sleep(max(0.02, FAST_MS / 1000 - (time.perf_counter() - t0)))
 
     # ================================================================ early exits (take profit)
     async def _check_exits(self, accounts: list[dict], states: dict[int, MarketState]) -> None:

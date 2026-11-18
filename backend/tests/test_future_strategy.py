@@ -19,36 +19,39 @@ def _st(secs, spot, twap_window, fast=None, up_ask=0.06, exact=True, vol=0.6):
 
 
 def test_buys_cheap_underdog_just_after_cross():
-    # 45s left, coin just above the price to beat, window average a bit above too -> model ~ 50-60%
-    d, why = evaluate("O", _st(45, 100.004, 100.001), {}, StrategyContext())
+    # 90s left, coin just above the price to beat -> model ~ 50-60%, underdog priced at 6c
+    d, why = evaluate("O", _st(90, 100.002, 100.001), {}, StrategyContext())
     assert d is not None, why
     assert d.side == "UP" and d.limit_price == 0.06
 
 
-def test_skips_when_not_crossed():
-    d, why = evaluate("O", _st(45, 99.99, 99.99), {}, StrategyContext())
+def test_skips_when_not_crossed_if_rule_on():
+    d, why = evaluate("O", _st(90, 99.995, 99.995), {"require_cross": True}, StrategyContext())
     assert d is None and "crossed" in why
+    d2, _ = evaluate("O", _st(90, 99.995, 99.995), {}, StrategyContext())   # default: model decides
+    assert d2 is not None
 
 
 def test_skips_when_model_far_above_market():
     # coin far above the line but market still prices UP at 6c -> our feed likely wrong, skip
-    d, why = evaluate("O", _st(45, 100.5, 100.4), {}, StrategyContext())
+    d, why = evaluate("O", _st(90, 100.5, 100.4), {}, StrategyContext())
     assert d is None and "too far" in why
 
 
 def test_skips_outside_window_price_and_without_exact_reference():
-    assert evaluate("O", _st(20, 100.004, 100.001), {}, StrategyContext())[0] is None       # last 30s
-    assert evaluate("O", _st(45, 100.004, 100.001, up_ask=0.02), {}, StrategyContext())[0] is None  # < 3c
-    assert evaluate("O", _st(45, 100.004, 100.001, up_ask=0.15), {}, StrategyContext())[0] is None  # > 10c
-    d, why = evaluate("O", _st(45, 100.004, 100.001, exact=False), {}, StrategyContext())
+    assert evaluate("O", _st(45, 100.002, 100.001), {}, StrategyContext())[0] is None       # last 60s
+    assert evaluate("O", _st(90, 100.002, 100.001, up_ask=0.02), {}, StrategyContext())[0] is None  # < 3c
+    assert evaluate("O", _st(90, 100.002, 100.001, up_ask=0.20), {}, StrategyContext())[0] is None  # > 15c
+    d, why = evaluate("O", _st(90, 100.002, 100.001, exact=False), {}, StrategyContext())
     assert d is None and "price to beat" in why
 
 
 def test_uses_fast_price_when_available():
     # Chainlink still below the line, fast exchanges already above -> cross is seen early
-    d, _ = evaluate("O", _st(45, 99.999, 100.001, fast=100.004), {}, StrategyContext())
+    d, _ = evaluate("O", _st(90, 99.99, 99.99, fast=100.002), {"require_cross": True}, StrategyContext())
     assert d is not None
-    d2, _ = evaluate("O", _st(45, 99.999, 100.001, fast=100.004), {"use_fast": False}, StrategyContext())
+    d2, _ = evaluate("O", _st(90, 99.99, 99.99, fast=100.002), {"require_cross": True, "use_fast": False},
+                     StrategyContext())
     assert d2 is None
 
 

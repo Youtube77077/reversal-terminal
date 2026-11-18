@@ -27,13 +27,14 @@ PARAM_DOCS = {
 }
 
 STRATEGY_DOCS = {
-    "O": {"side": "underdog", "summary": "Buys a 3-10c underdog only when fast exchange prices show the coin has just crossed the real price to beat; sells at 90c if reached.",
-          "how": ["Watches Binance, Coinbase, OKX and Hyperliquid — they move a moment before Polymarket's settlement feed.",
-                  "With 30-120s left and the underdog at 3-10c, it buys only if the coin is now on the underdog's side of the",
-                  "real price to beat (the 60-second average at the start) and the model's chance beats price + fee by 3 points.",
-                  "If the price later reaches 90c it sells early; otherwise it holds to the end."],
+    "O": {"side": "underdog", "summary": "Buys a 3-15c underdog with 60-120s left when fast exchange data says its real chance beats Polymarket's price + fee; sells at 90c.",
+          "how": ["Checks Binance, Coinbase and OKX (about 2 seconds ahead of the feed that settles the market) together with",
+                  "Polymarket's order book 5 times per second, only in the last 2 minutes.",
+                  "With 60-120s left and the underdog at 3-15c, it buys if the real chance of finishing past the true price to beat",
+                  "(the 60-second average at the start) beats price + fee by 3 points, but skips cases where the market strongly disagrees.",
+                  "Sells at 90c if reached; otherwise holds to the end. Optional: only buy after the coin has already crossed."],
           "idea": "Catch the moment the coin has crossed but Polymarket's price hasn't caught up yet.",
-          "risk": "Most trades lose $1. Wins pay roughly 9-30x. Backtest: 164 trades in ~11h, 16 wins, positive overall, but 16 wins is a small sample."},
+          "risk": "About 4 of 5 trades lose $1; a win pays about $6-30. Backtest ($100, 1s delay): 117 trades, 22 wins, $100 -> $216 over ~11h. 22 wins is still a small sample."},
     "N": {"side": "underdog", "summary": "Buys the cheap side ONLY when the real chance of a flip is higher than its price + fee.",
           "how": ["Each second, estimates the flip chance from: distance to the start price, current volatility,",
                   "seconds left, and Polymarket's 60-second-average settlement rule.",

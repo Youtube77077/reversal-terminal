@@ -73,11 +73,11 @@ FAVOURITE_KEYS = {"K", "L", "M"}
 
 STRATEGIES["O"] = {
     "name": "Smart Future Trading",
-    "description": "Watches fast exchange prices (Binance, Coinbase, OKX, Hyperliquid) that move a moment before "
-                   "Polymarket. Buys a 3-10c underdog only when the coin has just crossed the real price to beat "
-                   "(60s average at the start) and the model's chance beats price + fee. Sells at 90c if reached.",
-    "params": {"min_price": 0.03, "max_price": 0.10, "entry_min_secs": 30.0, "entry_max_secs": 120.0,
-               "min_edge": 0.03, "model_max": 0.60, "require_cross": True, "use_fast": True,
+    "description": "Checks fast exchange prices (Binance, Coinbase, OKX - ~2 s ahead of the settlement feed) and "
+                   "Polymarket's order book 5x per second in the last 2 minutes. Buys a 3-15c underdog with 60-120 s "
+                   "left when the model's real chance (vs the true price to beat) beats price + fee. Sells at 90c.",
+    "params": {"min_price": 0.03, "max_price": 0.15, "entry_min_secs": 60.0, "entry_max_secs": 120.0,
+               "min_edge": 0.03, "model_max": 0.60, "require_cross": False, "use_fast": True,
                "take_profit_price": 0.90, "min_liquidity_usd": 1.0, "stake_usd": 1.0},
 }
 
@@ -387,10 +387,12 @@ def _evaluate_smart_longshot(st: MarketState, p: dict) -> tuple[Decision | None,
 def _evaluate_future(st: MarketState, p: dict) -> tuple[Decision | None, str | None]:
     """Smart Future Trading (O).
 
-    Backtest on 708 recorded markets with the corrected price to beat (60s TWAP at start):
-    underdog 3-10c, 30-120s left, model chance in [price+fee+3pt, 60%] -> 164 trades, 16 wins
-    (9.8% vs 7.6% needed), positive in both halves of the data. Above 60% the market was right
-    (our feed vs Chainlink mismatch), below 3c and inside the last 30s it lost money.
+    v2 backtest (708 markets, $100 start, $1/trade, fills 1 s AFTER the decision at the then-current
+    ask, per-second exits): underdog 3-15c, 60-120 s left, model in [price+fee+3pt, 60%], sell at 90c
+    -> 117 trades, 22 wins, $100 -> $216, max dip -$23, positive in both halves and with a 2 s delay.
+    Tested and rejected: buying in the last 30 s / 1c "late snipes" (lost money), early loss-cutting
+    (destroyed the edge), a 50/50 filter (no effect for 3-15c prices). Requiring the coin to have
+    crossed the line already: 8 trades, +$27 (safer, far fewer trades) - optional.
     """
     secs = st.secs_remaining
     if not (p["entry_min_secs"] <= secs <= p["entry_max_secs"]):

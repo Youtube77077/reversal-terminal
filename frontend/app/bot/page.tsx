@@ -12,7 +12,7 @@ import { useWallet } from "@/lib/wallet";
 const CHOICES = [
   { key: "K", name: "Safe favourite", tag: "Recommended", text: "In the last 30 seconds, buys the side that's almost sure to win (95%+). Small wins, rare big losses." },
   { key: "M", name: "Smart favourite", tag: "Data-driven", text: "Like Safe favourite, but only trades when past results prove it beats the fees. Trades less often." },
-  { key: "O", name: "Smart future trading", tag: "New · fast data", text: "Watches Binance, Coinbase & OKX, which move about 2 seconds before the price feed that settles the market. Buys a 3–10¢ underdog only right after the coin crosses the real price to beat, and sells at 90¢ if it gets there." },
+  { key: "O", name: "Smart future trading", tag: "New · fast data", text: "Checks Binance, Coinbase & OKX (about 2s ahead of the feed that settles the market) and Polymarket's prices 5× a second in the last 2 minutes. Buys a 3–15¢ underdog when its real chance beats the price + fee. Sells at 90¢." },
   { key: "N", name: "Smart long shot", tag: "Experimental", text: "Buys the cheap side only when a real flip looks likely and beats price + fee. Backtests lost money, so it now trades very rarely. For testing only." },
 ];
 const COINS = ["BTC", "ETH", "SOL", "XRP", "DOGE", "HYPE", "BNB"];
@@ -22,7 +22,7 @@ const DEFAULTS: Record<string, Cfg> = {
   K: { max_price: 0.98, min_price: 0.90, entry_max_secs: 30, min_edge: 0, stake_usd: 5 },
   M: { max_price: 0.99, min_price: 0.85, entry_max_secs: 30, min_edge: 0, stake_usd: 5 },
   N: { max_price: 0.15, min_price: 0, entry_max_secs: 45, min_edge: 0.03, stake_usd: 1 },
-  O: { max_price: 0.10, min_price: 0.03, entry_max_secs: 120, entry_min_secs: 30, min_edge: 0.03, stake_usd: 1, take_profit_price: 0.90, require_cross: true },
+  O: { max_price: 0.15, min_price: 0.03, entry_max_secs: 120, entry_min_secs: 60, min_edge: 0.03, stake_usd: 1, take_profit_price: 0.90, require_cross: false },
 };
 const LOSS = [{ v: 25, l: "¼ of it" }, { v: 50, l: "Half" }, { v: 100, l: "All of it" }];
 const WIN = [{ v: 0, l: "Never" }, { v: 50, l: "+50%" }, { v: 100, l: "Double" }, { v: 200, l: "Triple" }];
@@ -164,7 +164,7 @@ export default function BotPage() {
                       <button onClick={() => setCfg({ ...cfg, require_cross: !cfg.require_cross })}
                         className={clsx("col-span-2 rounded-2xl px-4 py-3 text-left text-[13px] font-bold", cfg.require_cross ? "bg-black text-white" : "bg-black/10")}>
                         {cfg.require_cross ? "✓ " : ""}Only buy after the coin crosses the price to beat
-                        <span className="block text-[11px] font-semibold opacity-70">The coin must already be on the underdog's side of the 60-second average at the start — not just moving toward it.</span>
+                        <span className="block text-[11px] font-semibold opacity-70">Safer but ~15× fewer trades. Backtest: off = $100 → $216 (117 trades), on = $100 → $127 (8 trades).</span>
                       </button>
                     </>}
                   </div>
