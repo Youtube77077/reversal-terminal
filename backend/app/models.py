@@ -57,6 +57,7 @@ class Market(Base):
     open_price_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Real settlement threshold: Chainlink 60s-TWAP at window start (computed from our Chainlink feed)
     price_to_beat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    final_twap: Mapped[float | None] = mapped_column(Float, nullable=True)   # our Chainlink 60s average at close
     winner: Mapped[str | None] = mapped_column(String(4), nullable=True)
     resolved_ts: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     fee_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -390,6 +391,7 @@ class Transaction(Base):
     gross_payout: Mapped[float | None] = mapped_column(Float, nullable=True)
     exit_proceeds: Mapped[float] = mapped_column(Float, default=0.0)   # cash from selling early (after fees)
     exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    predicted_prob: Mapped[float | None] = mapped_column(Float, nullable=True)   # model's win chance at decision
     net_profit: Mapped[float | None] = mapped_column(Float, nullable=True)
     roi: Mapped[float | None] = mapped_column(Float, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="signal", index=True)
@@ -513,3 +515,28 @@ class HistoricalMarket(Base):
     history_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # [[t, p_up], ...]
     ingested_ts: Mapped[int] = mapped_column(BigInteger, default=0)
     source: Mapped[str] = mapped_column(String(48), default="clob_prices_history")
+
+
+class StrategyCandidate(Base):
+    """Best moment per (account, market) a probability strategy considered — traded or not.
+
+    Lets us check, after the market settles, whether the trades it SKIPPED would have made money
+    and whether its predicted probabilities were right."""
+    __tablename__ = "strategy_candidates"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_id: Mapped[int] = mapped_column(Integer, index=True)
+    strategy_key: Mapped[str] = mapped_column(String(4), index=True)
+    market_id: Mapped[int] = mapped_column(Integer, index=True)
+    asset: Mapped[str] = mapped_column(String(8))
+    ts: Mapped[int] = mapped_column(BigInteger, index=True)
+    secs_remaining: Mapped[float | None] = mapped_column(Float, nullable=True)
+    side: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    ask: Mapped[float | None] = mapped_column(Float, nullable=True)
+    model_prob: Mapped[float | None] = mapped_column(Float, nullable=True)
+    breakeven: Mapped[float | None] = mapped_column(Float, nullable=True)
+    edge: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reason: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    traded: Mapped[bool] = mapped_column(Boolean, default=False)
+    checks: Mapped[int] = mapped_column(Integer, default=0)
+    winner: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    would_pnl_per_dollar: Mapped[float | None] = mapped_column(Float, nullable=True)

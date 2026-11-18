@@ -156,6 +156,12 @@ async def reversal_curves():
     return await asyncio.to_thread(charts.reversal_curves)
 
 
+@router.get("/accounts/{account_id}/report")
+async def bot_report(account_id: int):
+    from ..services import bot_report as br
+    return await asyncio.to_thread(br.report, account_id)
+
+
 @router.get("/analytics/movement")
 async def movement():
     from ..services import movement as mv

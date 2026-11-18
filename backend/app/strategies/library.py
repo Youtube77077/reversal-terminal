@@ -162,7 +162,8 @@ def size_order(stake: float, limit: float, min_shares: float, min_notional: floa
     return max(shares, min_shares)
 
 
-def evaluate(key: str, st: MarketState, params: dict, ctx: StrategyContext) -> tuple[Decision | None, str | None]:
+def evaluate(key: str, st: MarketState, params: dict, ctx: StrategyContext,
+             diag: dict | None = None) -> tuple[Decision | None, str | None]:
     """Return (decision, None) to trade, or (None, reason) when conditions are not met."""
     p = {**default_params(key), **(params or {})}
     secs = st.secs_remaining
@@ -171,7 +172,7 @@ def evaluate(key: str, st: MarketState, params: dict, ctx: StrategyContext) -> t
     if key == "N":
         return _evaluate_smart_longshot(st, p)
     if key == "O":
-        return _evaluate_future(st, p)
+        return _evaluate_future(st, p, diag)
     if key == "F":
         t = float(p["entry_t"])
         if abs(secs - t) > 0.5:
@@ -384,7 +385,7 @@ def _evaluate_smart_longshot(st: MarketState, p: dict) -> tuple[Decision | None,
                     decision_ask=ask, reasons=reasons, expected=exp), None
 
 
-def _evaluate_future(st: MarketState, p: dict) -> tuple[Decision | None, str | None]:
+def _evaluate_future(st: MarketState, p: dict, diag: dict | None = None) -> tuple[Decision | None, str | None]:
     """Smart Future Trading (O).
 
     v2 backtest (708 markets, $100 start, $1/trade, fills 1 s AFTER the decision at the then-current
@@ -420,6 +421,10 @@ def _evaluate_future(st: MarketState, p: dict) -> tuple[Decision | None, str | N
     pw = flip_probability(st, dog, use_fast=bool(p.get("use_fast")))
     if pw is None:
         return None, "missing volatility data"
+    if diag is not None:
+        be0 = ask + taker_fee(1.0, ask, st.fee)
+        diag.update({"side": dog, "ask": ask, "model_prob": pw, "breakeven": be0, "edge": pw - be0,
+                     "secs": secs, "crossed": crossed})
     if pw > p["model_max"]:
         return None, f"model {pw:.0%} too far from market price — feed likely disagrees with Chainlink, skipped"
     tick = st.tick_size or 0.01

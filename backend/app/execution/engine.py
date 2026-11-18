@@ -50,7 +50,8 @@ log = logging.getLogger("reversal.engine")
 
 
 FAST_KEYS = {"O"}          # strategies evaluated by the sub-second loop
-FAST_MS = 200              # 5 checks per second
+FAST_MS = 50               # fallback: 20 checks per second (plus instantly on every order-book change)
+EXIT_EVERY_MS = 200        # take-profit checks (DB query) at most 5x per second
 FAST_WINDOW_MS = 125_000   # only the last ~2 minutes of each market
 
 
@@ -81,6 +82,9 @@ class TradingEngine:
         self._fast_accounts: list[dict] = []                 # accounts running a FAST strategy (e.g. O)
         self._fast_task: asyncio.Task | None = None
         self.fast_checks = 0
+        self._wake: asyncio.Event | None = None
+        self._last_exit_check = 0.0
+        self._cand: dict[tuple[int, int], dict] = {}        # (account, market) -> best candidate so far
 
     # ================================================================ context
     def _refresh_hist(self) -> None:
@@ -314,6 +318,7 @@ class TradingEngine:
                 outcome=d.side, order_type=d.order_type, limit_price=d.limit_price, decision_ask=d.decision_ask,
                 requested_shares=d.shares, unfilled_shares=d.shares, status="pending", created_ts=st.server_ts,
                 entry_secs_remaining=st.secs_remaining, fee_estimated=st.fee.estimated,
+                predicted_prob=d.expected.get("model_win_prob") or d.expected.get("hist_win_prob"),
                 entry_snapshot_json=json.dumps(snapshot, default=str)))
             accounting.reserve(s, acct, cost, txid)
             intent = OrderIntent(account_id=acct.id, market_id=st.market_id, token_id=st.token(d.side), side=d.side,
@@ -441,11 +446,17 @@ class TradingEngine:
                         self.resting.pop(oid, None)
 
     # ================================================================ fast loop (strategy O)
+    def notify_book(self, token: str) -> None:
+        """Order book changed -> wake the fast loop immediately (called on the event loop)."""
+        if self._wake is not None:
+            self._wake.set()
+
     async def _fast_loop(self) -> None:
         """Re-evaluate fast strategies every FAST_MS using the newest order book AND the newest
         exchange prices at the same instant (the 1-second sampler is too slow for a ~2 s edge)."""
         ctx = StrategyContext(hist_lookup=self.hist_lookup)
         log.info("fast strategy loop started (%d account(s))", len(self._fast_accounts))
+        self._wake = asyncio.Event()
         while self._fast_accounts:
             t0 = time.perf_counter()
             self.fast_checks += 1
@@ -462,7 +473,9 @@ class TradingEngine:
                             except Exception:
                                 continue
                         smap = {st.market_id: st for st in states}
-                        await self._check_exits(self._fast_accounts, smap)
+                        if time.perf_counter() - self._last_exit_check >= EXIT_EVERY_MS / 1000:
+                            self._last_exit_check = time.perf_counter()
+                            await self._check_exits(self._fast_accounts, smap)
                         for acct in self._fast_accounts:
                             params = json.loads(acct["params_json"] or "{}")
                             for st in states:
@@ -471,7 +484,10 @@ class TradingEngine:
                                 key = (acct["id"], st.market_id)
                                 if key in self.inflight or key in self._done:
                                     continue
-                                decision, _why = evaluate(acct["strategy_key"], st, params, ctx)
+                                diag: dict = {}
+                                decision, why = evaluate(acct["strategy_key"], st, params, ctx, diag)
+                                if diag:
+                                    self._note_candidate(acct, st, diag, why, decision is not None)
                                 if decision is None:
                                     continue
                                 self.inflight.add(key)
@@ -480,7 +496,44 @@ class TradingEngine:
                                 t.add_done_callback(self.tasks.discard)
             except Exception:
                 log.exception("fast loop error")
-            await asyncio.sleep(max(0.02, FAST_MS / 1000 - (time.perf_counter() - t0)))
+            # wait for the next order-book change, or FAST_MS at most; never spin faster than 20 ms
+            spent = time.perf_counter() - t0
+            if spent < 0.02:
+                await asyncio.sleep(0.02 - spent)
+            try:
+                await asyncio.wait_for(self._wake.wait(), timeout=max(0.0, FAST_MS / 1000 - max(spent, 0.02)))
+            except asyncio.TimeoutError:
+                pass
+            self._wake.clear()
+
+    def _note_candidate(self, acct: dict, st: MarketState, diag: dict, why: str | None, traded: bool) -> None:
+        key = (acct["id"], st.market_id)
+        cur = self._cand.get(key)
+        n = (cur or {}).get("checks", 0) + 1
+        if traded or cur is None or (not cur.get("traded") and diag.get("edge", -9) > cur.get("edge", -9)):
+            self._cand[key] = {**diag, "account_id": acct["id"], "strategy_key": acct["strategy_key"],
+                               "market_id": st.market_id, "asset": st.asset, "ts": st.server_ts,
+                               "reason": None if traded else (why or "")[:160], "traded": traded or bool((cur or {}).get("traded")),
+                               "checks": n}
+        else:
+            cur["checks"] = n
+
+    def _flush_candidates(self, s, market_id: int, winner: str) -> None:
+        from ..models import StrategyCandidate
+        for key in [k for k in list(self._cand) if k[1] == market_id]:
+            c = self._cand.pop(key, None)
+            if not c:
+                continue
+            ask = c.get("ask")
+            wp = None
+            if ask and 0 < ask < 1 and winner in ("UP", "DOWN"):
+                fee_pd = 0.07 * (1 - ask)       # fee per $1 spent
+                wp = (1 / ask - 1 - fee_pd) if c.get("side") == winner else -(1 + fee_pd)
+            s.add(StrategyCandidate(account_id=c["account_id"], strategy_key=c["strategy_key"], market_id=market_id,
+                                    asset=c["asset"], ts=c["ts"], secs_remaining=c.get("secs"), side=c.get("side"),
+                                    ask=ask, model_prob=c.get("model_prob"), breakeven=c.get("breakeven"),
+                                    edge=c.get("edge"), reason=c.get("reason"), traded=bool(c.get("traded")),
+                                    checks=c.get("checks", 0), winner=winner, would_pnl_per_dollar=wp))
 
     # ================================================================ early exits (take profit)
     async def _check_exits(self, accounts: list[dict], states: dict[int, MarketState]) -> None:
@@ -601,6 +654,10 @@ class TradingEngine:
                                                       Transaction.status.in_(("filled", "partially_filled", "unresolved")))
                             ).all()
             m = s.get(Market, market_id)
+            try:
+                self._flush_candidates(s, market_id, winner)
+            except Exception:
+                log.exception("candidate flush failed")
             for tx in txs:
                 if tx.filled_shares <= 0:
                     tx.status = "expired"

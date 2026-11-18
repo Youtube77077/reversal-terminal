@@ -68,7 +68,7 @@ class Collector:
         self.settings = get_settings()
         self.assets = [a for a in self.settings.assets if a in ASSETS]
         self.prices = PriceStore()
-        self.channel = MarketChannel(self.settings.clob_market_ws_url)
+        self.channel = MarketChannel(self.settings.clob_market_ws_url, on_update=self._on_book_update)
         self.chainlink = ChainlinkFeed(self.settings.rtds_ws_url, self.prices, self.assets)
         self.binance = BinanceFeed(self.settings.binance_ws_url, self.prices, self.assets)
         self.fast_feeds = [CoinbaseFeed(self.prices, self.assets), OkxFeed(self.prices, self.assets),
@@ -261,6 +261,13 @@ class Collector:
             s.expunge(m)
             return m
 
+    def _on_book_update(self, token: str) -> None:
+        if self.engine is not None:
+            try:
+                self.engine.notify_book(token)
+            except Exception:
+                pass
+
     async def _prune_subscriptions(self) -> None:
         now = now_ms()
         stale = [m for m in self.markets.values() if m.close_ts < now - 20_000]
@@ -270,8 +277,12 @@ class Collector:
             self.fees.pop(m.id, None)
             self.checkpoints_done.pop(m.id, None)
             self.last_obs_ts.pop(m.id, None)
+            ser = self.prices.get(m.asset, "chainlink")
+            fin = ser.twap(m.close_ts - 60_000, m.close_ts) if ser and ser.ts and ser.ts[0] <= m.close_ts - 55_000 else None
             with db_write_lock, session_scope() as s:
                 row = s.get(Market, m.id)
+                if row and fin:
+                    row.final_twap = fin
                 if row and row.status in ("upcoming", "active"):
                     row.status = "closed"
 
