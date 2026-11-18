@@ -9,6 +9,12 @@ git fetch -q origin main
 if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
   echo "$(date -u +%FT%TZ) updating $(git rev-parse --short HEAD) -> $(git rev-parse --short origin/main)"
   git reset -q --hard origin/main
-  docker compose --env-file .compose.env up -d --build --remove-orphans
+  # never let a stuck build block future updates
+  if ! timeout 20m docker compose --env-file .compose.env up -d --build --remove-orphans; then
+    echo "$(date -u +%FT%TZ) build failed or timed out — will retry next run"
+    git reset -q --hard HEAD@{1} || true   # go back so the next run retries this update
+    exit 1
+  fi
+  echo "$(date -u +%FT%TZ) now running $(git rev-parse --short HEAD)"
   docker image prune -f >/dev/null 2>&1 || true
 fi
