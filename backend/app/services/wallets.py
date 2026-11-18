@@ -116,7 +116,7 @@ def delete(wid: int) -> None:
         if not w or w.deleted:
             raise ValueError("wallet not found")
         if w.is_main:
-            raise ValueError("Main 1 can't be deleted")
+            raise ValueError("The main wallet can't be deleted (you can rename it)")
         accts = s.scalars(select(Account).where(Account.wallet_id == wid)).all()
         if any(session_status(s, a)["active"] for a in accts):
             raise ValueError("stop this wallet's bot first")
