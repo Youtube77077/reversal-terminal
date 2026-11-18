@@ -185,29 +185,29 @@ function MiniStat({ k, v, sub, tone }: { k: string; v: string; sub?: string; ton
 
 function FundsSheet({ open, onClose, accounts, onDone }: { open: boolean; onClose: () => void; accounts: any[]; onDone: () => void }) {
   const paper = accounts.filter((a) => a.mode !== "live");
-  const [aid, setAid] = useState<string>("");
+  const aid = paper[0] ? String(paper[0].id) : "";   // always the wallet selected above
   const [amt, setAmt] = useState("20");
   const [err, setErr] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
-  useEffect(() => { if (!aid && paper.length) setAid(String(paper[0].id)); }, [paper, aid]);
   const act = async (action: string) => {
     setErr(null); setOk(null);
     try {
       await post(`/api/accounts/${aid}/${action}`, action === "reset" ? { balance: Number(amt) } : { amount: Number(amt) });
-      setOk(`Done`); onDone();
+      setOk(`Done · ${paper[0]?.name}`); onDone();
     } catch (e: any) { setErr(e.message); }
   };
   return (
-    <Drawer open={open} onClose={onClose} title="Virtual funds">
+    <Drawer open={open} onClose={onClose} title="Practice money">
       <div className="space-y-4">
-        <p className="text-[13px] text-dim">Paper accounts only. Changes are recorded in the ledger; past trades are never modified. Live balances come from your real Polymarket wallet.</p>
-        <Field label="Account"><Select value={aid} onChange={setAid} className="w-full" options={paper.map((a) => ({ value: String(a.id), label: `${a.name} · ${usd(a.equity)}` }))} /></Field>
+        <p className="text-[13px] text-dim">Pick the wallet, then add, withdraw or set its practice money. Real money comes from your Polymarket wallet.</p>
+        <Field label="Wallet"><WalletBar /></Field>
+        {paper[0] && <div className="text-[15px] font-semibold">{paper[0].name}: <span className="num">{usd(paper[0].equity)}</span></div>}
         <Field label="Amount (USD)"><input className={inputCls + " py-3 text-[20px]"} inputMode="decimal" value={amt} onChange={(e) => setAmt(e.target.value)} /></Field>
         <div className="flex flex-wrap gap-2">{[5, 10, 20, 50, 100, 250, 500].map((v) => <Button key={v} size="sm" onClick={() => setAmt(String(v))}>${v}</Button>)}</div>
         <div className="grid grid-cols-3 gap-2">
           <Button tone="primary" size="lg" onClick={() => act("deposit")}>Add</Button>
           <Button size="lg" onClick={() => act("withdraw")}>Withdraw</Button>
-          <Button tone="warn" size="lg" onClick={() => confirm(`Set this account's balance to $${amt}?`) && act("reset")}>Set balance</Button>
+          <Button tone="warn" size="lg" onClick={() => confirm(`Set ${paper[0]?.name ?? "this wallet"}'s practice money to $${amt}?`) && act("reset")}>Set balance</Button>
         </div>
         <ErrorNote error={err} />
         {ok && <div className="text-[13px] text-up">{ok}</div>}

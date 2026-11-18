@@ -3,6 +3,7 @@ import clsx from "clsx";
 import { KeyRound, Pencil, Plus, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
+import NameSheet from "@/components/NameSheet";
 import { Button, ErrorNote, inputCls } from "@/components/ui";
 import { api, post } from "@/lib/api";
 import { signedUsd, usd } from "@/lib/format";
@@ -12,6 +13,7 @@ export default function WalletsPage() {
   const { wallets, wallet, select, reload } = useWallet();
   const [amt, setAmt] = useState<Record<number, string>>({});
   const [err, setErr] = useState<string | null>(null);
+  const [sheet, setSheet] = useState<{ id?: number; name: string } | null>(null);
   const run = async (fn: () => Promise<any>) => { setErr(null); try { await fn(); reload(); } catch (e: any) { setErr(e.message); } };
 
   return (
@@ -29,7 +31,7 @@ export default function WalletsPage() {
                 <div className="truncate text-[20px] font-bold">{w.name}{w.is_main && <span className="ml-2 rounded-full bg-cash/15 px-2 py-0.5 text-[11px] font-bold text-accent">MAIN</span>}</div>
                 <div className="text-[13px] text-dim">{wallet?.id === w.id ? "Selected" : "Tap to select"} · {w.keys?.configured ? "Polymarket keys added" : "no Polymarket keys"}</div>
               </button>
-              <button title="Rename" onClick={() => { const n = prompt("Rename wallet", w.name); if (n) run(() => api(`/api/wallets/${w.id}`, { method: "PATCH", body: JSON.stringify({ name: n }) })); }}
+              <button title="Rename" onClick={() => setSheet({ id: w.id, name: w.name })}
                 className="rounded-full bg-panel2 p-2.5"><Pencil size={16} /></button>
               {!w.is_main && (
                 <button title="Delete" onClick={() => confirm(`Delete "${w.name}"?`) && run(() => api(`/api/wallets/${w.id}`, { method: "DELETE" }))}
@@ -50,8 +52,15 @@ export default function WalletsPage() {
           </div>
         );
       })}
-      <button onClick={() => { const n = prompt("Name for the new wallet", `Testing ${wallets.length}`); if (n) run(async () => { const w = await post("/api/wallets", { name: n }); select(w.id); }); }}
+      <button onClick={() => setSheet({ name: `Testing ${wallets.length}` })}
         className="flex w-full items-center justify-center gap-2 rounded-full bg-panel py-4 text-[16px] font-bold active:scale-[.99]"><Plus size={18} />New wallet</button>
+      <NameSheet open={!!sheet} title={sheet?.id ? "Rename wallet" : "New wallet"} cta={sheet?.id ? "Save name" : "Create wallet"}
+        initial={sheet?.name ?? ""} onClose={() => setSheet(null)}
+        onSave={async (name) => {
+          if (sheet?.id) await api(`/api/wallets/${sheet.id}`, { method: "PATCH", body: JSON.stringify({ name }) });
+          else { const w = await post("/api/wallets", { name }); select(w.id); }
+          reload();
+        }} />
     </div>
   );
 }
