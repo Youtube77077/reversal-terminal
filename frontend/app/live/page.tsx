@@ -137,7 +137,7 @@ export default function LivePage() {
           </div>
         )}
         <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto_auto]">
-          <Field label="App password (to confirm)"><input type="password" className={inputCls + " py-3"} value={pw} onChange={(e) => setPw(e.target.value)} /></Field>
+          <Field label="PIN (to confirm)"><input type="password" className={inputCls + " py-3"} value={pw} onChange={(e) => setPw(e.target.value)} /></Field>
           <div className="flex items-end"><Button tone="primary" size="lg" disabled={busy || !f.private_key}
             onClick={() => run(() => put("/api/live/credentials", { ...f, password: pw, confirm: "CONFIRM" }).then(() => setF({ private_key: "", wallet_address: "", relayer_key: "", relayer_address: "", builder_key: "", builder_secret: "", builder_passphrase: "" })), "Keys saved and sent to the executor")}>
             {busy ? "Saving…" : "Save keys"}</Button></div>
@@ -153,7 +153,7 @@ export default function LivePage() {
             <span className={clsx("h-8 w-14 rounded-full p-1 transition", switchOn ? "bg-down" : "bg-line2")}>
               <span className={clsx("block h-6 w-6 rounded-full bg-white shadow transition", switchOn && "translate-x-6")} /></span>
           </button>
-          <p className="mt-2 text-[12px] text-faint">Uses the app password entered above.</p>
+          <p className="mt-2 text-[12px] text-faint">Uses the PIN entered above.</p>
         </Panel>
 
         <Panel title={acct ? acct.name : "Live account"}>

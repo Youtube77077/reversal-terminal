@@ -30,6 +30,8 @@ PUBLIC_PREFIXES = ("/login", "/_next/", "/api/auth/", "/favicon", "/icon", "/app
 
 router = APIRouter(prefix="/api/auth")
 _attempts: dict[str, deque] = defaultdict(deque)
+_global_fail: deque = deque()   # failed logins from ANY address (short PINs need a global limit)
+GLOBAL_MAX_FAILS = 20            # per hour, all addresses combined
 
 
 def _secret() -> bytes:
@@ -94,14 +96,19 @@ async def login(body: LoginIn, request: Request, response: Response):
     now = time.time()
     while q and now - q[0] > 300:
         q.popleft()
-    if len(q) >= 10:
-        raise HTTPException(429, "too many attempts — wait 5 minutes")
+    while _global_fail and now - _global_fail[0] > 3600:
+        _global_fail.popleft()
+    if len(_global_fail) >= GLOBAL_MAX_FAILS:
+        raise HTTPException(429, "Too many wrong PINs — login locked for up to 1 hour")
+    if len(q) >= 5:
+        raise HTTPException(429, "Too many attempts — wait 5 minutes")
     q.append(now)
     pw = get_settings().app_password
     if not pw:
         return {"ok": True, "auth": "disabled"}
     if not hmac.compare_digest(body.password.encode(), pw.encode()):
-        raise HTTPException(401, "wrong password")
+        _global_fail.append(now)
+        raise HTTPException(401, "Wrong PIN")
     q.clear()
     tok = make_token()
     secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"

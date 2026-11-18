@@ -44,7 +44,7 @@ export default function ResetCard({ onDone, bare }: { onDone?: () => void; bare?
       <div className="mt-3 grid grid-cols-2 gap-2">
         <label className="text-[12px] text-dim">Paper balance after reset
           <input className={inputCls + " mt-1 py-2.5"} inputMode="decimal" value={bal} onChange={(e) => setBal(e.target.value)} /></label>
-        <label className="text-[12px] text-dim">App password
+        <label className="text-[12px] text-dim">PIN
           <input type="password" className={inputCls + " mt-1 py-2.5"} value={pw} onChange={(e) => setPw(e.target.value)} /></label>
       </div>
       <button onClick={go} disabled={!any || busy}

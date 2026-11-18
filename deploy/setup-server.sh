@@ -11,6 +11,12 @@ if ! command -v docker >/dev/null; then
   $SUDO usermod -aG docker "$(whoami)" || true
 fi
 
+echo "==> Adding 2 GB swap (helps the first build on small servers)"
+if ! swapon --show | grep -q /swapfile; then
+  $SUDO fallocate -l 2G /swapfile && $SUDO chmod 600 /swapfile && $SUDO mkswap /swapfile >/dev/null && $SUDO swapon /swapfile
+  echo "/swapfile none swap sw 0 0" | $SUDO tee -a /etc/fstab >/dev/null
+fi
+
 echo "==> Opening ports 80/443 in the OS firewall (Oracle images block them by default)"
 if command -v iptables >/dev/null; then
   for p in 80 443; do
@@ -21,16 +27,18 @@ fi
 
 echo "==> Getting the code"
 if [ ! -d reversal-terminal ]; then
-  read -rp "GitHub repo (owner/name): " REPO
-  read -rsp "GitHub token with read access to that repo (not stored): " TOKEN; echo
-  git clone "https://${TOKEN}@github.com/${REPO}.git" reversal-terminal
+  read -rp "GitHub repo (owner/name) [Youtube77077/reversal-terminal]: " REPO
+  REPO=${REPO:-Youtube77077/reversal-terminal}
+  read -rsp "GitHub token (press Enter if the repo is public): " TOKEN; echo
+  if [ -n "$TOKEN" ]; then git clone "https://${TOKEN}@github.com/${REPO}.git" reversal-terminal
+  else git clone "https://github.com/${REPO}.git" reversal-terminal; fi
   git -C reversal-terminal remote set-url origin "https://github.com/${REPO}.git"
 fi
 cd reversal-terminal
 
 if [ ! -f .env ]; then
   cp .env.example .env
-  read -rsp "Choose the website/app password: " PW; echo
+  read -rsp "Choose your app PIN (digits): " PW; echo
   sed -i "s|^APP_PASSWORD=.*|APP_PASSWORD=${PW}|" .env
   sed -i "s|^SESSION_SECRET=.*|SESSION_SECRET=$(openssl rand -hex 32)|" .env
   sed -i "s|^EXECUTOR_TOKEN=.*|EXECUTOR_TOKEN=$(openssl rand -hex 24)|" .env
