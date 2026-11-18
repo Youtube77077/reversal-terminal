@@ -165,4 +165,5 @@ class HyperliquidFeed(_Feed):
                 self._add(asset, mids[coin], None)
 
 
-FAST_SOURCES = ("binance", "coinbase", "okx", "hyperliquid")
+# Hyperliquid allMids updates only every ~3s with no measurable lead (tested 2026-11-18) — recorded, not blended
+FAST_SOURCES = ("binance", "coinbase", "okx")

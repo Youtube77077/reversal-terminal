@@ -12,7 +12,7 @@ import { useWallet } from "@/lib/wallet";
 const CHOICES = [
   { key: "K", name: "Safe favourite", tag: "Recommended", text: "In the last 30 seconds, buys the side that's almost sure to win (95%+). Small wins, rare big losses." },
   { key: "M", name: "Smart favourite", tag: "Data-driven", text: "Like Safe favourite, but only trades when past results prove it beats the fees. Trades less often." },
-  { key: "O", name: "Smart future trading", tag: "New · fast data", text: "Watches Binance, Coinbase, OKX & Hyperliquid, which move before Polymarket. Buys a 3–10¢ underdog only right after the coin crosses the real price to beat, and sells at 90¢ if it gets there." },
+  { key: "O", name: "Smart future trading", tag: "New · fast data", text: "Watches Binance, Coinbase & OKX, which move about 2 seconds before the price feed that settles the market. Buys a 3–10¢ underdog only right after the coin crosses the real price to beat, and sells at 90¢ if it gets there." },
   { key: "N", name: "Smart long shot", tag: "Experimental", text: "Buys the cheap side only when a real flip looks likely and beats price + fee. Backtests lost money, so it now trades very rarely. For testing only." },
 ];
 const COINS = ["BTC", "ETH", "SOL", "XRP", "DOGE", "HYPE", "BNB"];
