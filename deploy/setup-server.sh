@@ -20,7 +20,7 @@ fi
 echo "==> Opening ports 80/443 in the OS firewall (Oracle images block them by default)"
 if command -v iptables >/dev/null; then
   for p in 80 443; do
-    $SUDO iptables -C INPUT -p tcp --dport $p -j ACCEPT 2>/dev/null || $SUDO iptables -I INPUT 5 -p tcp --dport $p -j ACCEPT
+    $SUDO iptables -C INPUT -p tcp --dport $p -j ACCEPT 2>/dev/null || $SUDO iptables -I INPUT -p tcp --dport $p -j ACCEPT
   done
   if command -v netfilter-persistent >/dev/null; then $SUDO netfilter-persistent save || true; fi
 fi
