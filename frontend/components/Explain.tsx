@@ -39,7 +39,7 @@ const DOCS: Record<string, Doc> = {
       ["Edge", "Really-wins % minus price minus fee. Positive = buying the underdog there made money; negative = it lost money."], ["CI / range", "The honest range the true number is probably in. Wide range = not enough data yet."]] },
   "/wallets": { what: "Your wallets. Each has its own practice money, its own bot and can have its own Polymarket keys, so you can test different strategies side by side.",
     points: [["Main 1", "Your main wallet, with your real Polymarket keys. Can't be deleted."], ["Add / Remove", "Put practice money in or take it out."], ["Set to", "Make the practice money exactly this amount."], ["API keys", "Connect a Polymarket account to this wallet for real trading."]] },
-  "/coins": { what: "Everything the bot has learned about each of the 7 coins from every recorded market, updated every 5 minutes. Tap 'All coins' to compare, or a coin for all its details.",
+  "/coins": { what: "Everything the bot has learned about each of the 7 coins from every recorded market, updated every minute (live prices every second). Tap a coin card for all its details.",
     points: [["Price to beat", "The 60-second average price at the start of the market. UP wins if the 60-second average at the end is at or above it."],
       ["Normal / Big move", "Normal = half of all markets moved less than this. Big = only 1 in 10 moved more."],
       ["Swing", "Highest minus lowest price during the 5 minutes."], ["Crossed the line", "The price went from one side of the price to beat to the other — a possible flip."],
@@ -69,9 +69,9 @@ export default function Explain() {
   const doc = DOCS[key];
   const [open, setOpen] = useState(false);
   const [basics, setBasics] = useState(false);
-  useEffect(() => { try { setOpen(localStorage.getItem("rt_explain" + key) !== "0"); } catch { setOpen(true); } }, [key]);
+  useEffect(() => { setOpen(false); setBasics(false); }, [key]);   // always starts closed
   if (!doc) return null;
-  const toggle = () => { const v = !open; setOpen(v); try { localStorage.setItem("rt_explain" + key, v ? "1" : "0"); } catch {} };
+  const toggle = () => setOpen(!open);
   return (
     <div className="mx-auto w-full max-w-[1600px] px-4 pt-3 lg:px-8">
       <div className="panel overflow-hidden">

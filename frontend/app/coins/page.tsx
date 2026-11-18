@@ -1,5 +1,6 @@
 "use client";
 import clsx from "clsx";
+import { ChevronLeft } from "lucide-react";
 import { useState } from "react";
 import { usePoll } from "@/lib/api";
 import { useLive } from "@/lib/live";
@@ -16,22 +17,76 @@ const pct0 = (v: number | null | undefined, d = 1) => (v == null ? "—" : `${(v
 const time = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
 export default function CoinsPage() {
-  const { data } = usePoll<any>("/api/analytics/movement", 60000);
+  const { data } = usePoll<any>("/api/analytics/movement", 30000);   // stats refresh every minute on the server
   const [coin, setCoin] = useState<string>("ALL");
   const A = data?.assets || {};
   return (
     <div className="page max-w-[1200px] space-y-3">
-      <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
-        {["ALL", ...COINS].map((c) => (
-          <button key={c} onClick={() => setCoin(c)}
-            className={clsx("shrink-0 rounded-full px-4 py-2 text-[14px] font-bold", coin === c ? "bg-ink text-bg" : "bg-panel2 text-dim")}>
-            {c === "ALL" ? "All coins" : c}</button>
-        ))}
-      </div>
+      {coin !== "ALL" && (
+        <div className="flex items-center gap-2">
+          <button onClick={() => setCoin("ALL")} className="flex items-center gap-1 rounded-full bg-panel2 py-2 pl-2 pr-4 text-[14px] font-bold">
+            <ChevronLeft size={18} />All coins</button>
+          <div className="-mx-1 flex flex-1 gap-2 overflow-x-auto px-1">
+            {COINS.map((c) => (
+              <button key={c} onClick={() => setCoin(c)}
+                className={clsx("shrink-0 rounded-full px-3.5 py-2 text-[13px] font-bold", coin === c ? "bg-ink text-bg" : "bg-panel2 text-dim")}>{c}</button>
+            ))}
+          </div>
+        </div>
+      )}
       <p className="px-1 text-[12px] text-faint">
-        {data ? `Learned from ${data.markets} recorded markets (last 30 days) · updated ${time(data.generated_ts)} · refreshes every 5 minutes` : "Loading…"}
+        {data ? `Learned from ${data.markets} recorded markets (last 30 days) · updated ${time(data.generated_ts)} · statistics refresh every minute, live prices every second` : "Loading…"}
       </p>
-      {coin === "ALL" ? <Compare A={A} onPick={setCoin} /> : A[coin] ? <Coin a={coin} x={A[coin]} /> : <div className="panel p-6 text-dim">No data yet for {coin}.</div>}
+      {coin === "ALL" ? <><Grid A={A} onPick={setCoin} /><Compare A={A} onPick={setCoin} /></>
+        : A[coin] ? <Coin a={coin} x={A[coin]} /> : <div className="panel p-6 text-dim">No data yet for {coin}.</div>}
+    </div>
+  );
+}
+
+
+/* --------------------------------------------------------------- overview grid (brief) */
+function Grid({ A, onPick }: { A: any; onPick: (c: string) => void }) {
+  const { tick } = useLive();
+  return (
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+      {COINS.filter((c) => A[c]).map((c) => {
+        const x = A[c]; const s = tick?.assets?.[c]; const ref = x.price;
+        const f60 = (x.flip_rates || []).find((r: any) => r.t === 60);
+        return (
+          <button key={c} onClick={() => onPick(c)} className="panel animate-rise p-4 text-left transition active:scale-[.98]">
+            <div className="flex items-baseline justify-between">
+              <div><span className="text-[19px] font-bold">{c}</span> <span className="text-[12px] text-faint">{NAMES[c]}</span></div>
+              <span className="num text-[13px] font-semibold">{usd(s?.spot ?? ref, ref)}</span>
+            </div>
+            <div className="mt-1 flex items-center gap-2 text-[12px]">
+              {s ? <>
+                <span className="rounded-full bg-panel2 px-2 py-0.5 font-semibold">{Math.max(0, Math.round(s.secs_remaining))}s left</span>
+                {s.favourite && <span className={clsx("font-bold", s.favourite === "UP" ? "text-up" : "text-down")}>{s.favourite} {pct0(s.fav_prob, 0)}</span>}
+                {s.dist_abs != null && <span className="num text-faint">{usd(s.dist_abs, ref, true)} vs line</span>}
+              </> : <span className="text-faint">waiting for live market…</span>}
+            </div>
+            <div className="mt-3 grid grid-cols-3 gap-2">
+              <Mini label="Normal 5-min move" v={pc(x.move_5m_pct_full?.median)} />
+              <Mini label="Big move (1 in 10)" v={pc(x.move_5m_pct_full?.p90)} />
+              <Mini label="Crosses in last 60s" v={pct0(x.pct_markets_crossing_last_60s, 0)} />
+              <Mini label="UP won" v={pct0(x.up_win_rate, 0)} />
+              <Mini label="Fav. lost at 60s" v={f60 ? pct0(f60.real) : "—"} sub={f60 ? `priced ${pct0(f60.polymarket)}` : undefined} />
+              <Mini label="Comebacks from far" v={pct0(x.details?.comeback_from_far_at_60s?.rate)} />
+            </div>
+            <div className="mt-2 text-right text-[12px] font-semibold text-accent">All details →</div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function Mini({ label, v, sub }: { label: string; v: string; sub?: string }) {
+  return (
+    <div className="rounded-xl bg-panel2/60 px-2.5 py-2">
+      <div className="text-[10px] leading-tight text-dim">{label}</div>
+      <div className="num text-[15px] font-bold">{v}</div>
+      {sub && <div className="num text-[10px] text-faint">{sub}</div>}
     </div>
   );
 }
@@ -99,6 +154,10 @@ function Coin({ a, x }: { a: string; x: any }) {
             <Tile label="Price to beat" v={usd(s.open_price, ref)} />
             <Tile label="Price now" v={usd(s.spot, ref)} sub={s.dist_abs != null ? `${usd(s.dist_abs, ref, true)} from the line` : undefined} />
             <Tile label="Polymarket favourite" v={s.favourite ? `${s.favourite} ${pct0(s.fav_prob, 0)}` : "—"} tone={s.favourite === "UP" ? "up" : s.favourite === "DOWN" ? "down" : undefined} />
+            <Tile label="UP share price" v={s.up_ask != null ? `${Math.round(s.up_ask * 100)}¢` : "—"} sub={s.up_bid != null ? `sell ${Math.round(s.up_bid * 100)}¢` : undefined} />
+            <Tile label="DOWN share price" v={s.down_ask != null ? `${Math.round(s.down_ask * 100)}¢` : "—"} sub={s.down_bid != null ? `sell ${Math.round(s.down_bid * 100)}¢` : undefined} />
+            <Tile label="Distance from line" v={s.dist_bps != null ? `${s.dist_bps >= 0 ? "+" : ""}${(s.dist_bps / 100).toFixed(3)}%` : "—"} />
+            <Tile label="Last 10s move" v={usd(s.mom_10s, ref, true)} tone={s.mom_10s > 0 ? "up" : s.mom_10s < 0 ? "down" : undefined} />
           </div>
         ) : <p className="mt-2 text-[13px] text-dim">Waiting for the live market…</p>}
       </section>
@@ -149,6 +208,9 @@ function Coin({ a, x }: { a: string; x: any }) {
         </div>
       </section>
 
+
+      {/* lots more detail */}
+      <Details a={a} x={x} />
       {/* flip odds */}
       <section className="panel p-5">
         <h3 className="text-[17px] font-bold">How often the favourite lost — real vs Polymarket's price</h3>
@@ -211,6 +273,55 @@ function Coin({ a, x }: { a: string; x: any }) {
         </div>
       </section>
     </>
+  );
+}
+
+
+/* --------------------------------------------------------------- the deep dive */
+function Details({ a, x }: { a: string; x: any }) {
+  const d = x.details || {};
+  const dist = d.dist_from_line_pct || {};
+  const fl = d.price_side_flipped_after || {};
+  return (
+    <section className="panel p-5">
+      <h3 className="text-[17px] font-bold">More about how {a} behaves</h3>
+      <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <Tile label="Average 5-min move" v={pc(d.avg_move_pct)} sub={`spread of moves ±${pc(d.std_move_pct)}`} />
+        <Tile label="Average UP finish" v={pc(d.avg_up_move_pct, 3, true)} tone="up" />
+        <Tile label="Average DOWN finish" v={pc(d.avg_down_move_pct, 3, true)} tone="down" />
+        <Tile label="Time spent above the line" v={pct0(d.time_above_line_avg, 0)} sub="average per market" />
+        <Tile label="Close calls" v={pct0(d.close_calls_pct, 1)} sub="finished within 0.01% of the line" />
+        <Tile label="Photo finishes" v={pct0(d.very_close_calls_pct, 1)} sub="within 0.003%" />
+        <Tile label="Lead changes per market" v={d.lead_changes_avg != null ? d.lead_changes_avg.toFixed(1) : "—"} sub={`record ${d.lead_changes_max ?? "—"}`} />
+        <Tile label="Never changed leader" v={pct0(d.no_lead_change_pct, 0)} sub="one side the whole time" />
+        <Tile label="Highest point (normal)" v={pc(d.run_up_pct?.median, 3, true)} sub={`big: ${pc(d.run_up_pct?.p90, 3, true)}`} tone="up" />
+        <Tile label="Lowest point (normal)" v={pc(d.run_down_pct?.median, 3, true)} sub={`big: ${pc(d.run_down_pct?.p10, 3, true)}`} tone="down" />
+        <Tile label="Comebacks from far at 60s" v={pct0(d.comeback_from_far_at_60s?.rate)} sub={`of ${d.comeback_from_far_at_60s?.n ?? 0} markets clearly decided`} />
+        <Tile label="UP won, recent" v={pct0(d.up_rate_last_12, 0)} sub={`last 12 · last 48: ${pct0(d.up_rate_last_48, 0)} · last 144: ${pct0(d.up_rate_last_144, 0)}`} />
+      </div>
+      <div className="mt-4 overflow-x-auto">
+        <table className="w-full min-w-[520px] text-[13px]">
+          <thead className="text-left text-[11px] uppercase tracking-wide text-faint">
+            <tr><th className="py-2">Time left</th><th>Normal distance from line</th><th>Far (1 in 10)</th><th>Price still switched side after this</th></tr></thead>
+          <tbody>
+            {["T-120", "T-60", "T-30", "T-10"].map((k) => (
+              <tr key={k} className="border-t border-line/60">
+                <td className="py-2 font-semibold">{k.replace("T-", "")}s</td>
+                <td className="num">{pc(dist[k]?.median)}</td>
+                <td className="num text-dim">{pc(dist[k]?.p90)}</td>
+                <td className="num font-bold">{pct0(fl[k])}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <Help>
+        <b>Lead change</b> = the price crossed the line to the other side. <b>Close call</b> = the end average finished almost exactly on the
+        line. <b>Comebacks from far</b> = with 60 seconds left the price was further from the line than a normal last-minute move, yet it
+        still finished on the other side — this is how rare real late reversals are. <b>Price still switched side</b> = how often the side the
+        price was on at that moment was NOT the final side.
+      </Help>
+    </section>
   );
 }
 

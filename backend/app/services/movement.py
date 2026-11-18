@@ -25,7 +25,7 @@ from ..db import engine
 SIGMA_SCALE: dict[str, float] = {}   # asset -> learned model correction (read by strategies)
 _cache: dict = {"ts": 0, "data": None}
 _lock = threading.Lock()
-TTL = 300
+TTL = 60
 
 
 def _q(arr, q):
@@ -74,11 +74,26 @@ def compute(days: int = 30) -> dict:
             sg1 = sg1[sg1 != 0]
             cross60 = int((np.diff(sg1) != 0).sum()) if len(sg1) > 1 else 0
             seg = px[(ts > r.open_ts) & (ts <= r.close_ts)]
+            segall = np.sign(seg - ref)
+            segall = segall[segall != 0]
+            lead_changes = int((np.diff(segall) != 0).sum()) if len(segall) > 1 else 0
+            above = float((seg >= ref).mean()) if len(seg) else np.nan
+            final_side = 1 if fin >= ref else -1
+            side_at = {k: (np.sign(p[k] - ref) if p[k] == p[k] else 0) for k in (120, 60, 30, 10)}
             rows.append({"ref": ref, "move": fin - ref, "d120": p[0] - p[120], "d60": p[0] - p[60],
                          "d30": p[0] - p[30], "d10": p[0] - p[10], "crosses": crosses, "cross60": cross60,
                          "up": r.winner == "UP", "fin": fin, "open_ts": int(r.open_ts), "close_ts": int(r.close_ts),
                          "range": float(seg.max() - seg.min()) if len(seg) else np.nan, "id": int(r.id),
-                         "agree": (fin >= ref) == (r.winner == "UP")})
+                         "agree": (fin >= ref) == (r.winner == "UP"),
+                         "dist120": abs(p[120] - ref), "dist60": abs(p[60] - ref), "dist30": abs(p[30] - ref),
+                         "dist10": abs(p[10] - ref),
+                         "flip_after120": side_at[120] != 0 and side_at[120] != final_side,
+                         "flip_after60": side_at[60] != 0 and side_at[60] != final_side,
+                         "flip_after30": side_at[30] != 0 and side_at[30] != final_side,
+                         "flip_after10": side_at[10] != 0 and side_at[10] != final_side,
+                         "lead_changes": lead_changes, "above": above,
+                         "run_up": float(seg.max() - ref) if len(seg) else np.nan,
+                         "run_down": float(seg.min() - ref) if len(seg) else np.nan})
             # model calibration at T-60 and T-30: predicted sd of (final avg - projection) vs reality
             for t in (60, 30):
                 T = r.close_ts - t * 1000
@@ -116,7 +131,32 @@ def compute(days: int = 30) -> dict:
         edges = np.linspace(-lim, lim, 13)
         hist, _ = np.histogram(np.clip(mv, -lim, lim), bins=edges)
         recent = df.sort_values("open_ts", ascending=False).head(24)
+        mpct = df.move / df.ref * 100
+        dpc = lambda col: {"median": float((df[col] / df.ref * 100).median()), "p90": float((df[col] / df.ref * 100).quantile(.9))}
+        ordered = df.sort_values("open_ts")
+        last = lambda n: float(ordered.up.tail(n).mean()) if len(ordered) else None
+        # comebacks: price clearly on one side at T-60 (> normal last-60s move) and still finished on the other
+        far60 = df[(df.dist60 / df.ref * 100) > float((df.d60.abs() / df.ref * 100).median())]
+        details = {
+            "avg_move_pct": float(mpct.abs().mean()), "std_move_pct": float(mpct.std()),
+            "avg_up_move_pct": float(mpct[mpct > 0].mean()) if (mpct > 0).any() else None,
+            "avg_down_move_pct": float(mpct[mpct < 0].mean()) if (mpct < 0).any() else None,
+            "close_calls_pct": float((mpct.abs() < 0.01).mean()),
+            "very_close_calls_pct": float((mpct.abs() < 0.003).mean()),
+            "dist_from_line_pct": {"T-120": dpc("dist120"), "T-60": dpc("dist60"), "T-30": dpc("dist30"), "T-10": dpc("dist10")},
+            "price_side_flipped_after": {"T-120": float(df.flip_after120.mean()), "T-60": float(df.flip_after60.mean()),
+                                         "T-30": float(df.flip_after30.mean()), "T-10": float(df.flip_after10.mean())},
+            "lead_changes_avg": float(df.lead_changes.mean()), "lead_changes_max": int(df.lead_changes.max()),
+            "no_lead_change_pct": float((df.lead_changes == 0).mean()),
+            "time_above_line_avg": float(df.above.mean()),
+            "run_up_pct": {"median": float((df.run_up / df.ref * 100).median()), "p90": float((df.run_up / df.ref * 100).quantile(.9))},
+            "run_down_pct": {"median": float((df.run_down / df.ref * 100).median()), "p10": float((df.run_down / df.ref * 100).quantile(.1))},
+            "comeback_from_far_at_60s": {"n": int(len(far60)), "rate": float(far60.flip_after60.mean()) if len(far60) else None},
+            "up_rate_last_12": last(12), "up_rate_last_48": last(48), "up_rate_last_144": last(144),
+            "first_market_ts": int(df.open_ts.min()), "last_market_ts": int(df.open_ts.max()),
+        }
         out["assets"][a] = {
+            "details": details,
             "move_5m_pct_full": pct("move"), "move_5m_usd_full": usd("move"),
             "range_5m_usd": usd("range"), "range_5m_pct": pct("range"),
             "last_120s_pct": {"median": (_q(bps(df.d120), .5) or 0) / 100, "p90": (_q(bps(df.d120), .9) or 0) / 100},
