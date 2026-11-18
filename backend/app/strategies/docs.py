@@ -27,10 +27,10 @@ PARAM_DOCS = {
 }
 
 STRATEGY_DOCS = {
-    "O": {"side": "underdog", "summary": "Buys a 3-15c underdog with 60-120s left when fast exchange data says its real chance beats Polymarket's price + fee by 5 points; holds to the end.",
+    "O": {"side": "underdog", "summary": "Buys a 2-12c underdog with 30-120s left when fast exchange data says its real chance beats Polymarket's price + fee by 5 points; holds to the end.",
           "how": ["Checks Binance, Coinbase and OKX (about 2 seconds ahead of the feed that settles the market) together with",
                   "Polymarket's order book 5 times per second, only in the last 2 minutes.",
-                  "With 60-120s left and the underdog at 3-15c, it buys if the real chance of finishing past the true price to beat",
+                  "With 30-120s left and the underdog at 2-12c, it buys if the real chance of finishing past the true price to beat",
                   "(the 60-second average at the start) beats price + fee by 5 points, but skips cases where the market strongly disagrees.",
                   "Holds to the end (selling early at 90c made less in testing). Optional: sell early, or only buy after the coin has crossed."],
           "idea": "Catch the moment the coin has crossed but Polymarket's price hasn't caught up yet.",

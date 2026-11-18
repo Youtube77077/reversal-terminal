@@ -74,10 +74,10 @@ FAVOURITE_KEYS = {"K", "L", "M"}
 STRATEGIES["O"] = {
     "name": "Smart Future Trading",
     "description": "Checks fast exchange prices (Binance, Coinbase, OKX - ~2 s ahead of the settlement feed) and "
-                   "Polymarket's order book on every change in the last 2 minutes. Buys a 3-15c underdog with 60-120 s "
+                   "Polymarket's order book on every change in the last 2 minutes. Buys a 2-12c underdog with 30-120 s "
                    "left when the model's real chance (vs the true price to beat) beats price + fee by 5 points. "
                    "Holds to the end (backtest: holding beat selling at 90c).",
-    "params": {"min_price": 0.03, "max_price": 0.15, "entry_min_secs": 60.0, "entry_max_secs": 120.0,
+    "params": {"min_price": 0.02, "max_price": 0.12, "entry_min_secs": 30.0, "entry_max_secs": 120.0,
                "min_edge": 0.05, "model_max": 0.60, "require_cross": False, "use_fast": True,
                "take_profit_price": 0.0, "min_liquidity_usd": 1.0, "stake_usd": 2.0, "limit_offset_ticks": 1},
 }

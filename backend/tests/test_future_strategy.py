@@ -39,9 +39,9 @@ def test_skips_when_model_far_above_market():
 
 
 def test_skips_outside_window_price_and_without_exact_reference():
-    assert evaluate("O", _st(45, 100.002, 100.001), {}, StrategyContext())[0] is None       # last 60s
-    assert evaluate("O", _st(90, 100.002, 100.001, up_ask=0.02), {}, StrategyContext())[0] is None  # < 3c
-    assert evaluate("O", _st(90, 100.002, 100.001, up_ask=0.20), {}, StrategyContext())[0] is None  # > 15c
+    assert evaluate("O", _st(20, 100.002, 100.001), {}, StrategyContext())[0] is None       # last 30s
+    assert evaluate("O", _st(90, 100.002, 100.001, up_ask=0.01), {}, StrategyContext())[0] is None  # < 2c
+    assert evaluate("O", _st(90, 100.002, 100.001, up_ask=0.15), {}, StrategyContext())[0] is None  # > 12c
     d, why = evaluate("O", _st(90, 100.002, 100.001, exact=False), {}, StrategyContext())
     assert d is None and "price to beat" in why
 
