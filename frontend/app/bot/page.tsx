@@ -22,7 +22,7 @@ const DEFAULTS: Record<string, Cfg> = {
   K: { max_price: 0.98, min_price: 0.90, entry_max_secs: 30, min_edge: 0, stake_usd: 5 },
   M: { max_price: 0.99, min_price: 0.85, entry_max_secs: 30, min_edge: 0, stake_usd: 5 },
   N: { max_price: 0.15, min_price: 0, entry_max_secs: 45, min_edge: 0.03, stake_usd: 1 },
-  O: { max_price: 0.15, min_price: 0.03, entry_max_secs: 120, entry_min_secs: 60, min_edge: 0.03, stake_usd: 1, take_profit_price: 0.90, require_cross: false },
+  O: { max_price: 0.15, min_price: 0.03, entry_max_secs: 120, entry_min_secs: 60, min_edge: 0.03, stake_usd: 2, take_profit_price: 0.90, require_cross: false },
 };
 const LOSS = [{ v: 25, l: "¼ of it" }, { v: 50, l: "Half" }, { v: 100, l: "All of it" }];
 const WIN = [{ v: 0, l: "Never" }, { v: 50, l: "+50%" }, { v: 100, l: "Double" }, { v: 200, l: "Triple" }];

@@ -540,3 +540,37 @@ class StrategyCandidate(Base):
     checks: Mapped[int] = mapped_column(Integer, default=0)
     winner: Mapped[str | None] = mapped_column(String(4), nullable=True)
     would_pnl_per_dollar: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class ResearchMarket15(Base):
+    """15-minute Up/Down markets — recorded for research only, never traded."""
+    __tablename__ = "research_markets_15m"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    slug: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    asset: Mapped[str] = mapped_column(String(8), index=True)
+    open_ts: Mapped[int] = mapped_column(BigInteger, index=True)
+    close_ts: Mapped[int] = mapped_column(BigInteger, index=True)
+    up_token: Mapped[str] = mapped_column(String(100))
+    down_token: Mapped[str] = mapped_column(String(100))
+    condition_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    twap_s: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rule: Mapped[str | None] = mapped_column(Text, nullable=True)
+    winner: Mapped[str | None] = mapped_column(String(4), nullable=True)
+
+
+class ResearchObs15(Base):
+    __tablename__ = "research_obs_15m"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    market_id: Mapped[int] = mapped_column(Integer, index=True)
+    ts: Mapped[int] = mapped_column(BigInteger, index=True)
+    secs_remaining: Mapped[float] = mapped_column(Float)
+    up_bid: Mapped[float | None] = mapped_column(Float, nullable=True)
+    up_ask: Mapped[float | None] = mapped_column(Float, nullable=True)
+    down_bid: Mapped[float | None] = mapped_column(Float, nullable=True)
+    down_ask: Mapped[float | None] = mapped_column(Float, nullable=True)
+    up_asks_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    down_asks_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    up_bids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    down_bids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    spot: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fast_spot: Mapped[float | None] = mapped_column(Float, nullable=True)

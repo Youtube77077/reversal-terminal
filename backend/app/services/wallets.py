@@ -19,6 +19,11 @@ WALLET_RISK = {**DEFAULT_RISK, "max_investment_per_trade": 1000.0, "max_total_ex
                "max_simultaneous_positions": 20, "max_daily_loss": 100000.0, "max_drawdown_pct": 1.0}
 
 
+# Real money: hard caps so one bad day can't wipe the wallet (editable per account in Trading Engine)
+LIVE_RISK = {"max_investment_per_trade": 5.0, "max_total_exposure": 25.0, "max_daily_loss": 25.0,
+             "max_simultaneous_positions": 7}
+
+
 def key(w: Wallet) -> str:
     return "main" if w.is_main else f"w{w.id}"
 
@@ -38,7 +43,7 @@ def live_account(s, w: Wallet, create: bool = False) -> Account | None:
     a = s.scalar(select(Account).where(Account.wallet_id == w.id, Account.mode == "live", Account.archived.is_(False)))
     if a is None and create:
         a = Account(name=f"{w.name} · live", wallet_id=w.id, mode="live", strategy_key="K", params_json="{}",
-                    risk_json=json.dumps({**WALLET_RISK, "max_investment_per_trade": 5.0}), initial_balance=0.0,
+                    risk_json=json.dumps({**WALLET_RISK, **LIVE_RISK}), initial_balance=0.0,
                     cash=0.0, reserved=0.0, peak_equity=0.0, created_ts=now_ms())
         s.add(a)
         s.flush()

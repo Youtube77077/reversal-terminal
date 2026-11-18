@@ -41,6 +41,14 @@ class PolymarketLiveAdapter(ExecutionAdapter):
                 return None
             return float(r.json().get("usdc", 0.0))
 
+    _client: httpx.AsyncClient | None = None
+
+    def _http(self) -> httpx.AsyncClient:
+        """One persistent keep-alive connection to the local executor (no TCP handshake per order)."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=30, limits=httpx.Limits(max_keepalive_connections=4))
+        return self._client
+
     async def submit(self, intent: OrderIntent, fee: FeeSchedule | None = None, min_shares: float | None = None,
                      tick_size: float = 0.01) -> ExecutionReport:
         ok, why = self.available()
@@ -51,10 +59,9 @@ class PolymarketLiveAdapter(ExecutionAdapter):
             return ExecutionReport("failed", [], intent.shares, executed_ts=now_ms(),
                                    reason=f"order ${notional:.2f} exceeds LIVE_MAX_ORDER_USD ${self.settings.live_max_order_usd:.2f}")
         body = {"wallet": intent.meta.get("wallet", "main"), "tokenId": intent.token_id, "side": "BUY", "price": intent.limit_price, "size": intent.shares,
-                "mode": "limit_fak", "waitMs": 2500}
+                "mode": "limit_fak", "waitMs": 700}
         try:
-            async with httpx.AsyncClient(timeout=30) as c:
-                r = await c.post(f"{self.settings.executor_url}/order", json=body, headers=self._headers())
+            r = await self._http().post(f"{self.settings.executor_url}/order", json=body, headers=self._headers())
             d = r.json()
         except Exception as e:
             return ExecutionReport("failed", [], intent.shares, reason=f"executor error: {e!r}", executed_ts=now_ms())
@@ -77,10 +84,9 @@ class PolymarketLiveAdapter(ExecutionAdapter):
         if not ok:
             return {"ok": False, "error": why}
         body = {"wallet": wallet, "tokenId": token_id, "side": "SELL", "price": price, "size": size,
-                "mode": "limit_fak", "waitMs": 2500}
+                "mode": "limit_fak", "waitMs": 700}
         try:
-            async with httpx.AsyncClient(timeout=30) as c:
-                r = await c.post(f"{self.settings.executor_url}/order", json=body, headers=self._headers())
+            r = await self._http().post(f"{self.settings.executor_url}/order", json=body, headers=self._headers())
             return r.json()
         except Exception as e:
             return {"ok": False, "error": f"executor error: {e!r}"}

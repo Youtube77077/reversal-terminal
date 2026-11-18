@@ -518,6 +518,28 @@ class TradingEngine:
         else:
             cur["checks"] = n
 
+    def _drift_guard(self, s, acct) -> None:
+        """Real money only: pause if results fall far below what the model predicted.
+
+        Over the last 40 settled trades with a predicted chance, if actual wins are more than
+        2.5 standard deviations below the expected number of wins, something is wrong (market
+        changed, feed issue, bug) — stop and tell the user rather than keep losing."""
+        if acct is None or acct.mode != "live" or acct.halted_reason:
+            return
+        rows = s.execute(select(Transaction.predicted_prob, Transaction.net_profit).where(
+            Transaction.account_id == acct.id, Transaction.status.in_(("won", "lost")),
+            Transaction.predicted_prob.is_not(None)).order_by(Transaction.settled_ts.desc()).limit(40)).all()
+        if len(rows) < 40:
+            return
+        exp = sum(p for p, _ in rows)
+        var = sum(p * (1 - p) for p, _ in rows)
+        wins = sum(1 for _, pnl in rows if (pnl or 0) > 0)
+        if var > 0 and wins < exp - 2.5 * var ** 0.5:
+            acct.halted_reason = (f"Paused for safety: {wins} wins in the last 40 trades vs about {exp:.0f} "
+                                  f"expected — results are far below the model's predictions")
+            record_event("loss_limit", f"{acct.name}: {acct.halted_reason}", level="WARNING",
+                         data={"account_id": acct.id}, persist=True)
+
     def _flush_candidates(self, s, market_id: int, winner: str) -> None:
         from ..models import StrategyCandidate
         for key in [k for k in list(self._cand) if k[1] == market_id]:
@@ -690,6 +712,7 @@ class TradingEngine:
                 settled.append((tx.id, tx.asset, tx.status, tx.net_profit, acct.name))
             from .session import session_status
             for aid in {t.account_id for t in txs}:
+                self._drift_guard(s, s.get(Account, aid))
                 acct = s.get(Account, aid)
                 ss = session_status(s, acct)
                 if ss["active"] and ss["state"] in ("stop_loss_hit", "take_profit_hit") and not acct.halted_reason:

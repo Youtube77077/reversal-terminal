@@ -22,7 +22,7 @@ def test_buys_cheap_underdog_just_after_cross():
     # 90s left, coin just above the price to beat -> model ~ 50-60%, underdog priced at 6c
     d, why = evaluate("O", _st(90, 100.002, 100.001), {}, StrategyContext())
     assert d is not None, why
-    assert d.side == "UP" and d.limit_price == 0.06
+    assert d.side == "UP" and d.decision_ask == 0.06 and d.limit_price == 0.07   # may pay 1 tick more to get filled
 
 
 def test_skips_when_not_crossed_if_rule_on():

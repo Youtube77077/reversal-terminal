@@ -106,6 +106,12 @@ class Collector:
         except Exception:
             log.exception("checkpoint repair failed")
         self.channel.start()
+        try:
+            from .research15 import Research15
+            self.research15 = Research15(self)
+            await self.research15.start()
+        except Exception:
+            log.exception("15-minute research recorder failed to start (5-minute trading unaffected)")
         self.chainlink.start()
         self.binance.start()
         for f in self.fast_feeds:
@@ -744,6 +750,7 @@ class Collector:
             "last_tick_ts": self.last_tick_ts,
             "tick_count": self.tick_count,
             "fast_strategy_checks": getattr(self.engine, "fast_checks", 0) if self.engine else 0,
+            "research_15m": self.research15.health() if getattr(self, "research15", None) else None,
             "observations_written": self.observations_written,
             "missing_observations": self.missing_observations,
             "write_errors": self.write_errors,

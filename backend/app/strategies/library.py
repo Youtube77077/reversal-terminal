@@ -78,7 +78,7 @@ STRATEGIES["O"] = {
                    "left when the model's real chance (vs the true price to beat) beats price + fee. Sells at 90c.",
     "params": {"min_price": 0.03, "max_price": 0.15, "entry_min_secs": 60.0, "entry_max_secs": 120.0,
                "min_edge": 0.03, "model_max": 0.60, "require_cross": False, "use_fast": True,
-               "take_profit_price": 0.90, "min_liquidity_usd": 1.0, "stake_usd": 1.0},
+               "take_profit_price": 0.90, "min_liquidity_usd": 1.0, "stake_usd": 2.0, "limit_offset_ticks": 1},
 }
 
 STRATEGIES["N"] = {
