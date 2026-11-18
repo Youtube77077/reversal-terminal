@@ -73,9 +73,12 @@ def compute(days: int = 30) -> dict:
             sg1 = np.sign(px[k1 & k2] - ref)
             sg1 = sg1[sg1 != 0]
             cross60 = int((np.diff(sg1) != 0).sum()) if len(sg1) > 1 else 0
+            seg = px[(ts > r.open_ts) & (ts <= r.close_ts)]
             rows.append({"ref": ref, "move": fin - ref, "d120": p[0] - p[120], "d60": p[0] - p[60],
                          "d30": p[0] - p[30], "d10": p[0] - p[10], "crosses": crosses, "cross60": cross60,
-                         "up": r.winner == "UP"})
+                         "up": r.winner == "UP", "fin": fin, "open_ts": int(r.open_ts), "close_ts": int(r.close_ts),
+                         "range": float(seg.max() - seg.min()) if len(seg) else np.nan, "id": int(r.id),
+                         "agree": (fin >= ref) == (r.winner == "UP")})
             # model calibration at T-60 and T-30: predicted sd of (final avg - projection) vs reality
             for t in (60, 30):
                 T = r.close_ts - t * 1000
@@ -100,7 +103,34 @@ def compute(days: int = 30) -> dict:
         z = np.asarray(zs)
         scale = float(np.clip(1.4826 * np.median(np.abs(z - np.median(z))), 0.5, 3.0)) if len(z) >= 30 else 1.0
         SIGMA_SCALE[a] = scale
+        pct = lambda col: {k: (_q(bps(df[col]), q) or 0) / 100 for k, q in
+                           (("p25", .25), ("median", .5), ("p75", .75), ("p90", .9), ("max", 1.0))}
+        usd = lambda col: {k: _q(df[col].abs(), q) for k, q in
+                           (("p25", .25), ("median", .5), ("p75", .75), ("p90", .9), ("max", 1.0))}
+        df["hour"] = pd.to_datetime(df.open_ts, unit="ms").dt.hour
+        by_hour = [{"hour": int(h), "n": int(len(x)), "move_pct": float((x.move.abs() / x.ref * 100).median()),
+                    "up_rate": float(x.up.mean())} for h, x in df.groupby("hour")]
+        # histogram of 5-minute moves in % (signed)
+        mv = (df.move / df.ref * 100).to_numpy()
+        lim = float(np.quantile(np.abs(mv), 0.98)) or 0.01
+        edges = np.linspace(-lim, lim, 13)
+        hist, _ = np.histogram(np.clip(mv, -lim, lim), bins=edges)
+        recent = df.sort_values("open_ts", ascending=False).head(24)
         out["assets"][a] = {
+            "move_5m_pct_full": pct("move"), "move_5m_usd_full": usd("move"),
+            "range_5m_usd": usd("range"), "range_5m_pct": pct("range"),
+            "last_120s_pct": {"median": (_q(bps(df.d120), .5) or 0) / 100, "p90": (_q(bps(df.d120), .9) or 0) / 100},
+            "last_30s_pct": {"median": (_q(bps(df.d30), .5) or 0) / 100, "p90": (_q(bps(df.d30), .9) or 0) / 100},
+            "last_10s_pct": {"median": (_q(bps(df.d10), .5) or 0) / 100, "p90": (_q(bps(df.d10), .9) or 0) / 100},
+            "biggest_up_usd": float(df.move.max()), "biggest_down_usd": float(df.move.min()),
+            "by_hour": by_hour, "hist": {"edges": [float(e) for e in edges], "counts": [int(c) for c in hist]},
+            "rule_agreement": float(df.agree.mean()),
+            "streak_up_max": _streak(df.sort_values("open_ts").up.tolist(), True),
+            "streak_down_max": _streak(df.sort_values("open_ts").up.tolist(), False),
+            "recent": [{"id": int(x.id), "open_ts": int(x.open_ts), "price_to_beat": float(x.ref), "final_avg": float(x.fin),
+                        "move": float(x.move), "move_pct": float(x.move / x.ref * 100), "winner": "UP" if x.up else "DOWN",
+                        "crosses_last_120s": int(x.crosses), "range": None if x.range != x.range else float(x.range)}
+                       for x in recent.itertuples()],
             "markets": int(len(df)), "price": price,
             "move_5m_usd": {"median": _q(df.move.abs(), .5), "p90": _q(df.move.abs(), .9), "max": float(df.move.abs().max())},
             "move_5m_pct": {"median": _q(bps(df.move), .5) / 100, "p90": _q(bps(df.move), .9) / 100},
@@ -119,9 +149,40 @@ def compute(days: int = 30) -> dict:
     return out
 
 
+def _streak(seq: list, val: bool) -> int:
+    best = cur = 0
+    for v in seq:
+        cur = cur + 1 if v == val else 0
+        best = max(best, cur)
+    return best
+
+
+def flip_rates(days: int = 30) -> dict:
+    """Favourite-lost rate and Polymarket's underdog price per coin and time left (from checkpoints)."""
+    since = int((time.time() - days * 86400) * 1000)
+    df = pd.read_sql(text("SELECT asset, t_minus, favourite_lost, fav_prob FROM checkpoints WHERE valid=1 AND "
+                          "favourite_lost IS NOT NULL AND source='live' AND server_ts >= :s"), engine, params={"s": since})
+    out = {}
+    for a, g in df.groupby("asset"):
+        rows = []
+        for t, x in g.groupby("t_minus"):
+            rows.append({"t": int(t), "n": int(len(x)), "real": float(x.favourite_lost.mean()),
+                         "polymarket": float((1 - x.fav_prob).mean())})
+        out[a] = sorted(rows, key=lambda r: -r["t"])
+    return out
+
+
 def get(force: bool = False) -> dict:
     with _lock:
         if force or not _cache["data"] or time.time() - _cache["ts"] > TTL:
-            _cache["data"] = compute()
+            data = compute()
+            try:
+                fr = flip_rates()
+                for a, rows in fr.items():
+                    if a in data["assets"]:
+                        data["assets"][a]["flip_rates"] = rows
+            except Exception:
+                pass
+            _cache["data"] = data
             _cache["ts"] = time.time()
         return _cache["data"]

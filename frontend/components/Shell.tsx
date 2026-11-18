@@ -22,6 +22,7 @@ const TABS = [
 
 export const MORE = [
   { href: "/wallets", label: "Wallets", sub: "Main 1, testing wallets, money & keys", icon: Wallet },
+  { href: "/coins", label: "Coin analysis", sub: "Every coin: how it moves, flips, wins, by hour", icon: BarChart3 },
   { href: "/dashboard", label: "Dashboard", sub: "Full operating overview", icon: LayoutGrid },
   { href: "/scanner", label: "Reversal Scanner", sub: "Live cheap-underdog finder", icon: Radar },
   { href: "/trading", label: "Trading Engine", sub: "Accounts, risk limits, orders", icon: Zap },
