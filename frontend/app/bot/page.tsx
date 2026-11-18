@@ -12,7 +12,7 @@ import { useWallet } from "@/lib/wallet";
 const CHOICES = [
   { key: "K", name: "Safe favourite", tag: "Recommended", text: "In the last 30 seconds, buys the side that's almost sure to win (95%+). Small wins, rare big losses." },
   { key: "M", name: "Smart favourite", tag: "Data-driven", text: "Like Safe favourite, but only trades when past results prove it beats the fees. Trades less often." },
-  { key: "N", name: "Smart long shot", tag: "Experimental", text: "Buys the cheap side only when the coin is close enough to flip and the real chance beats the price + fee. Never buys hopeless 1¢ shots." },
+  { key: "N", name: "Smart long shot", tag: "Experimental", text: "Buys the cheap side only when a real flip looks likely and beats price + fee. Backtests lost money, so it now trades very rarely. For testing only." },
 ];
 const COINS = ["BTC", "ETH", "SOL", "XRP", "DOGE", "HYPE", "BNB"];
 const DEFAULTS: Record<string, { max_price: number; min_price: number; entry_max_secs: number; min_edge: number; stake_usd: number }> = {

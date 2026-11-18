@@ -74,7 +74,7 @@ FAVOURITE_KEYS = {"K", "L", "M"}
 STRATEGIES["N"] = {
     "name": "Smart Long Shot",
     "description": "Buy the cheap side only when a price model says the real flip chance beats price + fee.",
-    "params": {"max_price": 0.15, "min_edge": 0.03, "entry_min_secs": 1.0, "entry_max_secs": 45.0,
+    "params": {"max_price": 0.15, "min_edge": 0.03, "model_shrink": 0.2, "entry_min_secs": 1.0, "entry_max_secs": 45.0,
                "min_liquidity_usd": 1.0},
 }
 
@@ -336,6 +336,18 @@ def _evaluate_smart_longshot(st: MarketState, p: dict) -> tuple[Decision | None,
     pw = flip_probability(st, dog)
     if pw is None:
         return None, "missing price/volatility data"
+    # Our spot/open feed sometimes disagrees with Polymarket's settlement reference (~10% of late
+    # moments). When our data says the underdog is AHEAD but the market says otherwise, the market
+    # was right 99%+ of the time in backtests — so never trade on that disagreement.
+    f = st.features
+    spot, op, twap = f.get("spot"), st.open_price, f.get("twap60_est") or f.get("spot")
+    if spot and op and twap:
+        dog_ahead = (spot > op and twap > op) if dog == "UP" else (spot < op and twap < op)
+        fav_ahead = (spot > op and twap > op) if dog == "DOWN" else (spot < op and twap < op)
+        if dog_ahead or not fav_ahead:
+            return None, "price feed disagrees with the market about who is ahead — skipped"
+    # Backtest calibration: model flip chances were ~5x too high (16% predicted vs 3% real).
+    pw = pw * float(p.get("model_shrink", 0.2))
     tick = st.tick_size or 0.01
     limit = _round_tick(min(0.99, ask + p["limit_offset_ticks"] * tick), tick)
     shares = size_order(p["stake_usd"], limit, st.min_order_size)
