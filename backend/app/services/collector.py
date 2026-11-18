@@ -732,6 +732,7 @@ class Collector:
             "started_ts": self.started_ts,
             "last_tick_ts": self.last_tick_ts,
             "tick_count": self.tick_count,
+            "fast_strategy_checks": getattr(self.engine, "fast_checks", 0) if self.engine else 0,
             "observations_written": self.observations_written,
             "missing_observations": self.missing_observations,
             "write_errors": self.write_errors,

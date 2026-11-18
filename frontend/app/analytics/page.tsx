@@ -3,6 +3,7 @@ import { useState } from "react";
 import { RateBars, TimeChart } from "@/components/Chart";
 import { BarChart, XYLines, seriesColor } from "@/components/Charts2";
 import Drill from "@/components/Drill";
+import CoinMoves from "@/components/CoinMoves";
 import AssetNav, { Verdict } from "@/components/AssetNav";
 import Link from "next/link";
 import { DataTable, ErrorNote, Field, inputCls, Panel, Rate, SectionNote, Select, Tabs } from "@/components/ui";
@@ -72,6 +73,7 @@ export default function Analytics() {
           { key: "verdict", label: "Verdict", align: "center", render: (r: any) => <Verdict v={r.verdict} /> },
         ]} />
       </Panel>
+      <CoinMoves />
       <Panel title="Real flip odds vs Polymarket price — every market" sub={`Updates as each 5-minute market resolves. ${odds?.note || ""}`}>
         {odds?.all?.length ? (<>
           <XYLines xs={odds.all.map((r: any) => r.t)} xLabel={(t) => `T-${t}`} series={[

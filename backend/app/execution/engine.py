@@ -80,6 +80,7 @@ class TradingEngine:
         self._rejected: set[tuple[int, int, str]] = set()   # dedupe identical rejections per market
         self._fast_accounts: list[dict] = []                 # accounts running a FAST strategy (e.g. O)
         self._fast_task: asyncio.Task | None = None
+        self.fast_checks = 0
 
     # ================================================================ context
     def _refresh_hist(self) -> None:
@@ -444,8 +445,10 @@ class TradingEngine:
         """Re-evaluate fast strategies every FAST_MS using the newest order book AND the newest
         exchange prices at the same instant (the 1-second sampler is too slow for a ~2 s edge)."""
         ctx = StrategyContext(hist_lookup=self.hist_lookup)
+        log.info("fast strategy loop started (%d account(s))", len(self._fast_accounts))
         while self._fast_accounts:
             t0 = time.perf_counter()
+            self.fast_checks += 1
             try:
                 if not self.paused:
                     now = now_ms()

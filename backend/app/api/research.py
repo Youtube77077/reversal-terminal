@@ -156,6 +156,12 @@ async def reversal_curves():
     return await asyncio.to_thread(charts.reversal_curves)
 
 
+@router.get("/analytics/movement")
+async def movement():
+    from ..services import movement as mv
+    return await asyncio.to_thread(mv.get)
+
+
 @router.get("/analytics/odds")
 async def odds():
     from ..services import odds as odds_svc
