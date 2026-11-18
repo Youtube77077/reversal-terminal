@@ -472,7 +472,10 @@ async def session_start(aid: int, body: SessionIn):
             raise HTTPException(404)
         mode = a.mode
     if mode == "live":
-        bal = await _eng().live.balance() if _eng() else None
+        from ..services.wallets import wallet_key_for_account
+        with session_scope() as s2:
+            wkey = wallet_key_for_account(s2, s2.get(Account, aid))
+        bal = await _eng().live.balance(wkey) if _eng() else None
         if bal is None:
             raise HTTPException(400, "Live executor unavailable: cannot read the real wallet balance")
         live_balance = bal
@@ -680,7 +683,7 @@ async def live_switch(body: SwitchIn):
     return {"enabled": live_enabled(), "executor": res}
 
 
-class ResetIn(BaseModel):
+class AdminResetIn(BaseModel):
     password: str = ""
     confirm: str = ""
     paper: bool = False
@@ -690,7 +693,7 @@ class ResetIn(BaseModel):
 
 
 @router.post("/admin/reset")
-async def admin_reset(body: ResetIn):
+async def admin_reset(body: AdminResetIn):
     import asyncio
     from ..services.reset import reset
     _check_password(body.password, body.confirm)
@@ -698,3 +701,76 @@ async def admin_reset(body: ResetIn):
         return await asyncio.to_thread(reset, body.paper, body.live, body.research, body.starting_balance)
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+# ================================================================ wallets
+class WalletIn(BaseModel):
+    name: str = ""
+
+
+@router.get("/wallets")
+def wallets_list():
+    from ..services import wallets
+    return wallets.list_wallets()
+
+
+@router.post("/wallets")
+def wallets_create(body: WalletIn):
+    from ..services import wallets
+    return wallets.create(body.name)
+
+
+@router.patch("/wallets/{wid}")
+def wallets_rename(wid: int, body: WalletIn):
+    from ..services import wallets
+    try:
+        return wallets.rename(wid, body.name)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.delete("/wallets/{wid}")
+def wallets_delete(wid: int):
+    from ..services import wallets
+    try:
+        wallets.delete(wid)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"deleted": True}
+
+
+@router.put("/wallets/{wid}/credentials")
+async def wallets_credentials(wid: int, body: CredentialsIn):
+    from ..execution.eligibility import check_eligibility
+    from ..execution.switch import live_enabled
+    from ..models import Wallet
+    from ..services import credentials, wallets
+    _check_password(body.password, body.confirm)
+    with db_write_lock, session_scope() as s:
+        w = s.get(Wallet, wid)
+        if not w or w.deleted:
+            raise HTTPException(404, "wallet not found")
+        k = wallets.key(w)
+        wallets.live_account(s, w, create=True)
+    try:
+        credentials.save(body.model_dump(exclude={"password", "confirm"}), k)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    res = await credentials.push_to_executor(live_enabled(), k)
+    await check_eligibility(force=True)
+    return {"saved": True, "masked": credentials.masked(k), "executor": res}
+
+
+@router.post("/wallets/{wid}/credentials/delete")
+async def wallets_credentials_delete(wid: int, body: PasswordIn):
+    from ..models import Wallet
+    from ..services import credentials, wallets
+    _check_password(body.password, body.confirm)
+    with session_scope() as s:
+        w = s.get(Wallet, wid)
+        if not w:
+            raise HTTPException(404)
+        k = wallets.key(w)
+    credentials.delete(k)
+    await credentials.push_to_executor(False, k)
+    return {"deleted": True}

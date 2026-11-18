@@ -221,9 +221,20 @@ class Strategy(Base):
     default_params_json: Mapped[str] = mapped_column(Text)
 
 
+class Wallet(Base):
+    """User-facing wallet: its own practice money, its own (optional) Polymarket keys."""
+    __tablename__ = "wallets"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(48))
+    is_main: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_ts: Mapped[int] = mapped_column(BigInteger, default=0)
+    deleted: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
 class Account(Base):
     __tablename__ = "accounts"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    wallet_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(64))
     mode: Mapped[str] = mapped_column(String(8), default="paper")  # paper only (live disabled)
     strategy_key: Mapped[str] = mapped_column(String(4), ForeignKey("strategies.key"))

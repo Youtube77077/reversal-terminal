@@ -34,9 +34,9 @@ class PolymarketLiveAdapter(ExecutionAdapter):
             return False, "live trading switch is off"
         return True, "live adapter configured (executor health checked per order)"
 
-    async def balance(self) -> float | None:
+    async def balance(self, wallet: str = "main") -> float | None:
         async with httpx.AsyncClient(timeout=15) as c:
-            r = await c.get(f"{self.settings.executor_url}/balance", headers=self._headers())
+            r = await c.get(f"{self.settings.executor_url}/balance", params={"wallet": wallet}, headers=self._headers())
             if r.status_code != 200:
                 return None
             return float(r.json().get("usdc", 0.0))
@@ -50,7 +50,7 @@ class PolymarketLiveAdapter(ExecutionAdapter):
         if notional > self.settings.live_max_order_usd + 1e-9:
             return ExecutionReport("failed", [], intent.shares, executed_ts=now_ms(),
                                    reason=f"order ${notional:.2f} exceeds LIVE_MAX_ORDER_USD ${self.settings.live_max_order_usd:.2f}")
-        body = {"tokenId": intent.token_id, "side": "BUY", "price": intent.limit_price, "size": intent.shares,
+        body = {"wallet": intent.meta.get("wallet", "main"), "tokenId": intent.token_id, "side": "BUY", "price": intent.limit_price, "size": intent.shares,
                 "mode": "limit_fak", "waitMs": 2500}
         try:
             async with httpx.AsyncClient(timeout=30) as c:
@@ -76,8 +76,8 @@ class PolymarketLiveAdapter(ExecutionAdapter):
             r = await c.post(f"{self.settings.executor_url}/cancel", json={"orderId": order_ref}, headers=self._headers())
             return r.status_code == 200 and r.json().get("ok", False)
 
-    async def redeem(self, condition_id: str) -> dict:
+    async def redeem(self, condition_id: str, wallet: str = "main") -> dict:
         async with httpx.AsyncClient(timeout=120) as c:
-            r = await c.post(f"{self.settings.executor_url}/redeem", json={"conditionId": condition_id},
+            r = await c.post(f"{self.settings.executor_url}/redeem", json={"conditionId": condition_id, "wallet": wallet},
                              headers=self._headers())
             return r.json()

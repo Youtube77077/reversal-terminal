@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import Chrome from "@/components/Chrome";
 import { LiveProvider } from "@/lib/live";
 import { ThemeProvider } from "@/lib/theme";
+import { WalletProvider } from "@/lib/wallet";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -27,7 +28,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="min-h-screen bg-bg antialiased">
         <ThemeProvider>
           <LiveProvider>
-            <Chrome>{children}</Chrome>
+            <WalletProvider><Chrome>{children}</Chrome></WalletProvider>
           </LiveProvider>
         </ThemeProvider>
       </body>

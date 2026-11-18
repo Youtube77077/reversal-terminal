@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useState } from "react";
 import { Button, ErrorNote, Field, inputCls, Panel, Select } from "@/components/ui";
 import { post, put, usePoll } from "@/lib/api";
+import WalletBar from "@/components/WalletBar";
+import { useWallet } from "@/lib/wallet";
 import { signedUsd, usd } from "@/lib/format";
 
 function Row({ ok, label, detail }: { ok: boolean; label: string; detail?: string }) {
@@ -37,7 +39,9 @@ const A = ({ href, children }: { href: string; children: React.ReactNode }) => (
 
 export default function LivePage() {
   const { data: st, error, reload } = usePoll<any>("/api/live/status", 8000);
-  const { data: cred, reload: reloadCred } = usePoll<any>("/api/live/credentials", 0);
+  const { wallet, reload: reloadW } = useWallet();
+  const cred = wallet?.keys;
+  const reloadCred = reloadW;
   const { data: strategies } = usePoll<any[]>("/api/strategies", 0);
   const [f, setF] = useState({ private_key: "", wallet_address: "", relayer_key: "", relayer_address: "", builder_key: "", builder_secret: "", builder_passphrase: "" });
   const [pw, setPw] = useState("");
@@ -115,7 +119,8 @@ export default function LivePage() {
         </Panel>
       </div>
 
-      <Panel title="API keys" right={<ShieldCheck size={18} className="text-up" />}
+      <WalletBar />
+      <Panel title={`API keys · ${wallet?.name ?? ""}`} right={<ShieldCheck size={18} className="text-up" />}
         sub="Encrypted on your server, never shown again, never sent to the browser or GitHub.">
         {cred?.configured && (
           <div className="mb-4 flex flex-wrap items-center gap-3 rounded-2xl bg-up/10 px-4 py-3 text-[13.5px]">
@@ -139,9 +144,9 @@ export default function LivePage() {
         <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto_auto]">
           <Field label="PIN (to confirm)"><input type="password" className={inputCls + " py-3"} value={pw} onChange={(e) => setPw(e.target.value)} /></Field>
           <div className="flex items-end"><Button tone="primary" size="lg" disabled={busy || !f.private_key}
-            onClick={() => run(() => put("/api/live/credentials", { ...f, password: pw, confirm: "CONFIRM" }).then(() => setF({ private_key: "", wallet_address: "", relayer_key: "", relayer_address: "", builder_key: "", builder_secret: "", builder_passphrase: "" })), "Keys saved and sent to the executor")}>
+            onClick={() => run(() => put(`/api/wallets/${wallet?.id}/credentials`, { ...f, password: pw, confirm: "CONFIRM" }).then(() => setF({ private_key: "", wallet_address: "", relayer_key: "", relayer_address: "", builder_key: "", builder_secret: "", builder_passphrase: "" })), "Keys saved and sent to the executor")}>
             {busy ? "Saving…" : "Save keys"}</Button></div>
-          {cred?.configured && <div className="flex items-end"><Button tone="danger" size="lg" onClick={() => confirm("Delete the saved keys? Live trading will stop.") && run(() => post("/api/live/credentials/delete", { password: pw, confirm: "CONFIRM" }), "Keys deleted")}>Delete keys</Button></div>}
+          {cred?.configured && <div className="flex items-end"><Button tone="danger" size="lg" onClick={() => confirm("Delete the saved keys? Live trading will stop.") && run(() => post(`/api/wallets/${wallet?.id}/credentials/delete`, { password: pw, confirm: "CONFIRM" }), "Keys deleted")}>Delete keys</Button></div>}
         </div>
       </Panel>
 

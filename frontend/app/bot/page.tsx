@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { post, qs, usePoll } from "@/lib/api";
 import { price, signedUsd, usd } from "@/lib/format";
+import WalletBar from "@/components/WalletBar";
+import { useWallet } from "@/lib/wallet";
 
 /* The 3 simple strategy choices (the rest live in Strategy Lab). */
 const CHOICES = [
@@ -36,10 +38,13 @@ export default function BotPage() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const liveAcct = accounts?.find((a) => a.mode === "live" && !a.archived);
-  // the paper account used by the simple screen = first paper account with the chosen strategy
-  const paperAcct = accounts?.find((a) => a.mode !== "live" && a.strategy_key === strat);
-  const running = (accounts || []).find((a) => a.session?.active && !a.archived && (real ? a.mode === "live" : a.mode !== "live"));
+  const { wallet, reload: reloadW } = useWallet();
+  const mk = (x: any, mode: string) => x ? { id: x.id, mode, session: x.session, halted_reason: x.halted_reason,
+    summary: { equity: x.cash + x.reserved } } : null;
+  const paperAcct = mk(wallet?.paper, "paper");
+  const liveAcct = mk(wallet?.live, "live");
+  const paperBal = paperAcct?.summary.equity ?? 0;
+  const running = [paperAcct, liveAcct].find((a) => a && a.session?.active && (real ? a.mode === "live" : a.mode !== "live")) || null;
   const acct = running || (real ? liveAcct : paperAcct);
   const ss = running?.session;
   const armed = !!summary?.live_armed;
@@ -62,25 +67,26 @@ export default function BotPage() {
     if (budget < 1) return setErr("Budget must be at least $1");
     setBusy(true); setErr(null);
     try {
-      if (!real) await post(`/api/accounts/${acct.id}/reset`, { balance: budget });   // practice: account = exactly your budget
+      if (!real && budget > paperBal + 1e-9) throw new Error(`This wallet has ${usd(paperBal)} practice money. Add money first (Wallets → Add).`);
       await post(`/api/accounts/${acct.id}/session/start`, {
-        risk_budget_mode: real ? "amount" : "percent", risk_budget_value: real ? budget : 100,
+        risk_budget_mode: "amount", risk_budget_value: budget,
         stop_loss_pct: loss, take_profit_mode: win ? "percent" : "off", take_profit_value: win, strategy_key: strat,
         params: { ...cfg, assets: coins.length === COINS.length ? [] : coins },
       });
       (window as any).ReversalNative?.haptic("success");
-      reload();
+      reload(); reloadW();
     } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
   };
   const stop = async () => {
     if (!running) return;
     setBusy(true);
-    try { await post(`/api/accounts/${running.id}/session/stop`); reload(); } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
+    try { await post(`/api/accounts/${running.id}/session/stop`); reload(); reloadW(); } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
   };
 
   return (
     <div className="min-h-[calc(100vh-80px)] bg-cash text-oncash">
       <div className="mx-auto max-w-[520px] px-5 pb-32 pt-2 animate-rise lg:pb-10 lg:pt-8">
+        <div className="mb-3"><WalletBar onGreen /></div>
         {/* 1. practice / real */}
         <div className="flex rounded-full bg-black/10 p-1 text-[15px] font-bold">
           {[false, true].map((r) => (
@@ -101,9 +107,10 @@ export default function BotPage() {
             ) : (
               <>
                 {/* 2. budget */}
-                <div className="mt-6 text-center text-[15px] font-semibold opacity-75">{real ? "How much may the bot use?" : "Practice budget"}</div>
+                <div className="mt-6 text-center text-[15px] font-semibold opacity-75">{real ? "How much may the bot use?" : "How much may the bot use?"}</div>
                 <div className="money mt-1 text-center text-[80px] min-[400px]:text-[92px]">${val}</div>
-                {real && <div className="text-center text-[13px] font-semibold opacity-70">Wallet: {usd(liveBalance)}</div>}
+                <div className="text-center text-[13px] font-semibold opacity-75">
+                  {real ? `Polymarket wallet: ${usd(liveBalance)}` : <>Practice money in {wallet?.name}: {usd(paperBal)} · <Link href="/wallets" className="underline">add money</Link></>}</div>
                 <div className="mt-2 grid grid-cols-3 text-center">
                   {["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "<"].map((k) => (
                     <button key={k} onClick={() => press(k)} className="rounded-2xl py-2.5 text-[26px] font-semibold transition active:scale-90 active:bg-black/10">

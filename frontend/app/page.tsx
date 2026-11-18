@@ -7,6 +7,8 @@ import BankCard from "@/components/BankCard";
 import { TimeChart } from "@/components/Chart";
 import { BarChart } from "@/components/Charts2";
 import ResetCard from "@/components/ResetCard";
+import WalletBar from "@/components/WalletBar";
+import { useWallet, walletBalance } from "@/lib/wallet";
 import { ASSET_COLORS, Avatar, Button, Drawer, ErrorNote, Field, inputCls, ListRow, Select, Tabs } from "@/components/ui";
 import { post, usePoll } from "@/lib/api";
 import { dur, isNum, pct, price, signedUsd, usd } from "@/lib/format";
@@ -28,6 +30,7 @@ export default function Home() {
   const [mode, setMode] = useState("all");
   const { data: ser } = usePoll<any>(`/api/analytics/series?mode=${mode}`, 20000);
   const { tick } = useLive();
+  const { wallet, reload: reloadW } = useWallet();
   const [hide, setHide] = useState(false);
   const [funds, setFunds] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
@@ -45,10 +48,11 @@ export default function Home() {
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_420px] xl:gap-8">
         <div className="min-w-0 space-y-5">
           <div className="grid grid-cols-1 items-center gap-6 lg:grid-cols-[460px_1fr]">
-            <BankCard balance={sum?.equity} todayPnl={sum?.today_pnl} running={running.length} live={live} hidden={hide} />
+            <div className="space-y-3"><WalletBar />
+            <BankCard balance={walletBalance(wallet)} todayPnl={wallet?.paper?.session?.realized_pnl ?? 0} running={running.length} live={live} hidden={hide} /></div>
             <div className="space-y-3">
               <div className="flex items-center">
-                <span className="text-[15px] font-semibold text-dim">Total balance · all accounts</span>
+                <span className="text-[15px] font-semibold text-dim">{wallet?.name} · practice money</span>
                 <button onClick={toggleHide} className="ml-auto rounded-full p-2 text-dim hover:text-ink" aria-label="Hide balance">{hide ? <Eye size={20} /> : <EyeOff size={20} />}</button>
               </div>
               <div className="grid grid-cols-3 gap-2">
@@ -161,7 +165,7 @@ export default function Home() {
           </p>
         </div>
       </div>
-      <FundsSheet open={funds} onClose={() => setFunds(false)} accounts={sum?.accounts || []} onDone={reload} />
+      <FundsSheet open={funds} onClose={() => setFunds(false)} accounts={wallet ? [{ id: wallet.paper.id, name: wallet.name, mode: "paper", equity: walletBalance(wallet) }] : []} onDone={() => { reload(); reloadW(); }} />
       <Drawer open={resetOpen} onClose={() => setResetOpen(false)} title="Reset stats">
         <ResetCard onDone={() => { reload(); setResetOpen(false); }} bare />
       </Drawer>

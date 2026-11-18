@@ -51,6 +51,8 @@ async def lifespan(app: FastAPI):
 
     seed_connections()
     seed_strategies_and_accounts()
+    from .services import wallets as _w
+    _w.seed()
     collector.engine = TradingEngine(collector)
     await collector.start()
     bg = [asyncio.create_task(experiment_watchdog(), name="experiment-watchdog"),
@@ -90,10 +92,11 @@ async def _live_watch(collector) -> None:
     eng.live_armed = bool(app_settings.get_all().get("live_armed")) and live_enabled()
     while True:
         try:
-            if credentials.load():
+            if credentials.configured_wallets():
                 h = await executor_health()
-                if (not h.get("ok") and "unreachable" not in str(h.get("error"))) or (h.get("liveEnabled") != live_enabled()):
-                    await credentials.push_to_executor(live_enabled())
+                if (not h.get("ok") and "unreachable" not in str(h.get("error"))) or (h.get("liveEnabled") != live_enabled()) \
+                        or set(h.get("wallets") or []) != set(credentials.configured_wallets()):
+                    await credentials.push_all(live_enabled())
             if live_enabled():
                 el = await check_eligibility(force=True)
                 was = eng.live_eligible

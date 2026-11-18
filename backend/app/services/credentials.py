@@ -29,8 +29,9 @@ FIELDS = ("private_key", "wallet_address", "relayer_key", "relayer_address", "bu
           "builder_passphrase")
 
 
-def _path() -> Path:
-    return Path(get_settings().data_dir) / "live_credentials.enc"
+def _path(wallet: str = "main") -> Path:
+    name = "live_credentials.enc" if wallet == "main" else f"live_credentials_{wallet}.enc"
+    return Path(get_settings().data_dir) / name
 
 
 def _key() -> bytes:
@@ -61,11 +62,11 @@ def validate(c: dict) -> dict:
     return out
 
 
-def save(c: dict) -> None:
+def save(c: dict, wallet: str = "main") -> None:
     data = json.dumps(validate(c)).encode()
     nonce = os.urandom(12)
     blob = nonce + AESGCM(_key()).encrypt(nonce, data, b"v1")
-    p = _path()
+    p = _path(wallet)
     p.write_bytes(base64.b64encode(blob))
     try:
         os.chmod(p, 0o600)
@@ -73,8 +74,8 @@ def save(c: dict) -> None:
         pass
 
 
-def load() -> dict | None:
-    p = _path()
+def load(wallet: str = "main") -> dict | None:
+    p = _path(wallet)
     if not p.exists():
         return None
     try:
@@ -84,15 +85,15 @@ def load() -> dict | None:
         return None
 
 
-def delete() -> None:
-    p = _path()
+def delete(wallet: str = "main") -> None:
+    p = _path(wallet)
     if p.exists():
         p.write_bytes(os.urandom(len(p.read_bytes())))  # overwrite before unlinking
         p.unlink()
 
 
-def masked() -> dict:
-    c = load()
+def masked(wallet: str = "main") -> dict:
+    c = load(wallet)
     if not c:
         return {"configured": False}
     pk = c.get("private_key", "")
@@ -106,11 +107,11 @@ def masked() -> dict:
     }
 
 
-async def push_to_executor(live_enabled: bool) -> dict:
+async def push_to_executor(live_enabled: bool, wallet: str = "main") -> dict:
     """Send stored credentials + the live switch to the executor (localhost, token-protected)."""
     s = get_settings()
-    c = load() or {}
-    body = {"liveEnabled": bool(live_enabled), "credentials": c or None}
+    c = load(wallet) or {}
+    body = {"wallet": wallet, "liveEnabled": bool(live_enabled), "credentials": c or None}
     try:
         async with httpx.AsyncClient(timeout=60) as cl:
             r = await cl.post(f"{s.executor_url}/configure", json=body,
@@ -118,3 +119,14 @@ async def push_to_executor(live_enabled: bool) -> dict:
             return r.json()
     except Exception as e:
         return {"ok": False, "error": f"executor unreachable: {e!r}"}
+
+
+def configured_wallets() -> list[str]:
+    d = Path(get_settings().data_dir)
+    out = ["main"] if (d / "live_credentials.enc").exists() else []
+    out += [f.stem.replace("live_credentials_", "") for f in d.glob("live_credentials_*.enc")]
+    return out
+
+
+async def push_all(live_enabled: bool) -> dict:
+    return {w: await push_to_executor(live_enabled, w) for w in configured_wallets()}

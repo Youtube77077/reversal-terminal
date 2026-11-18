@@ -303,6 +303,8 @@ class TradingEngine:
             intent = OrderIntent(account_id=acct.id, market_id=st.market_id, token_id=st.token(d.side), side=d.side,
                                  order_type=d.order_type, tif=d.tif, limit_price=d.limit_price, shares=d.shares,
                                  expire_ts=expire, decision_ts=st.server_ts)
+            from ..services.wallets import wallet_key_for_account
+            intent.meta["wallet"] = wallet_key_for_account(s, acct)
             return order.id, txid, intent, acct.mode
 
     # ================================================================ execution results
@@ -460,7 +462,8 @@ class TradingEngine:
                 tx.settled_ts = now_ms()
                 tx.holding_seconds = (tx.settled_ts - (tx.entry_ts or tx.created_ts)) / 1000.0
                 if payout > 0 and tx.mode == "live" and m is not None:
-                    live_wins = m.condition_id
+                    from ..services.wallets import wallet_key_for_account
+                    live_wins = (m.condition_id, wallet_key_for_account(s, acct))
                 if payout > 0:
                     accounting.credit_settlement(s, acct, payout, tx.id,
                                                  f"{tx.filled_shares:g} {tx.outcome} shares x $1 ({m.slug if m else ''})")
@@ -486,8 +489,8 @@ class TradingEngine:
                                  f"{acct.name}: {acct.halted_reason} — bot stopped", level="WARNING",
                                  data={"account_id": acct.id, "session": ss}, persist=False)
         if live_wins and self.live_armed:
-            cond = live_wins
-            t = asyncio.run_coroutine_threadsafe(self.live.redeem(cond), self.loop) if self.loop else None
+            cond, wkey = live_wins
+            t = asyncio.run_coroutine_threadsafe(self.live.redeem(cond, wkey), self.loop) if self.loop else None
         for txid, asset, status, pnl, name in settled:
             record_event("trade_settled", f"{asset} {txid} {status.upper()} {pnl:+.4f} USD ({name})",
                          data={"tx": txid, "status": status, "net_profit": pnl})
