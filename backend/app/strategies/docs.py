@@ -27,6 +27,12 @@ PARAM_DOCS = {
 }
 
 STRATEGY_DOCS = {
+    "N": {"side": "underdog", "summary": "Buys the cheap side ONLY when the real chance of a flip is higher than its price + fee.",
+          "how": ["Each second, estimates the flip chance from: distance to the start price, current volatility,",
+                  "seconds left, and Polymarket's 60-second-average settlement rule.",
+                  "Buys only if that chance beats price + fee by min_edge (1 point). Never buys hopeless 1¢ shots."],
+          "idea": "Pays cents only when the market underprices a genuinely close call.",
+          "risk": "The model is an estimate; validate it on practice before real money."},
     "A": {"side": "underdog", "summary": "Buys the cheap side late in every market when it costs a few cents.",
           "how": ["Watches the last 30 seconds of each 5-minute market.",
                   "Finds the outcome the market thinks will LOSE (the underdog).",

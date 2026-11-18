@@ -71,6 +71,43 @@ STRATEGIES: dict[str, dict] = {
 
 FAVOURITE_KEYS = {"K", "L", "M"}
 
+STRATEGIES["N"] = {
+    "name": "Smart Long Shot",
+    "description": "Buy the cheap side only when a price model says the real flip chance beats price + fee.",
+    "params": {"max_price": 0.15, "min_edge": 0.01, "entry_min_secs": 1.0, "entry_max_secs": 45.0,
+               "min_liquidity_usd": 1.0},
+}
+
+
+def flip_probability(st: MarketState, side: str) -> float | None:
+    """Model chance that `side` wins at settlement.
+
+    Settlement compares the Chainlink 60-second TWAP at close with the opening price.
+    With t seconds left, (60-t)/60 of that average is already (approximately) fixed at the
+    recent TWAP; the rest is the average of the coming t seconds, modelled as a random walk
+    from the current price with the recently observed 1-second volatility.
+    """
+    import math
+    from scipy.stats import norm
+    f = st.features
+    spot, op, vol, twap = f.get("spot"), st.open_price, f.get("vol_30s"), f.get("twap60_est")
+    t = st.secs_remaining
+    if not spot or not op or vol is None or t <= 0:
+        return None
+    sigma = max(vol, 0.05) * 1e-4 * spot          # price units per sqrt(second); floor avoids zero-vol overconfidence
+    if t < 60:
+        known = twap if twap else spot
+        w = t / 60.0
+        mean = (1 - w) * (known - op) + w * (spot - op)
+        sd = w * sigma * math.sqrt(t / 3.0)
+    else:
+        mean = spot - op
+        sd = sigma * math.sqrt((t - 60) + 20.0)
+    if sd <= 0:
+        return 1.0 if ((mean >= 0) == (side == "UP")) else 0.0
+    z = mean / sd if side == "UP" else -mean / sd
+    return float(min(0.9999, max(0.0001, norm.cdf(z))))
+
 
 def default_params(key: str) -> dict:
     p = dict(COMMON_DEFAULTS)
@@ -117,6 +154,8 @@ def evaluate(key: str, st: MarketState, params: dict, ctx: StrategyContext) -> t
     secs = st.secs_remaining
     if key in FAVOURITE_KEYS:
         return _evaluate_favourite(key, st, p, ctx)
+    if key == "N":
+        return _evaluate_smart_longshot(st, p)
     if key == "F":
         t = float(p["entry_t"])
         if abs(secs - t) > 0.5:
@@ -281,4 +320,37 @@ def _evaluate_favourite(key: str, st: MarketState, p: dict, ctx: StrategyContext
             if p_hat - breakeven < p["min_edge"]:
                 return None, f"historical edge {p_hat - breakeven:+.4f} < {p['min_edge']}"
     return Decision(side=fav, limit_price=limit, shares=shares, order_type=p["order_type"], tif=p["tif"],
+                    decision_ask=ask, reasons=reasons, expected=exp), None
+
+
+def _evaluate_smart_longshot(st: MarketState, p: dict) -> tuple[Decision | None, str | None]:
+    secs = st.secs_remaining
+    if not (p["entry_min_secs"] <= secs <= p["entry_max_secs"]):
+        return None, "outside entry window"
+    if not st.book_ok or st.underdog is None:
+        return None, "no underdog"
+    dog = st.underdog
+    ask = st.ask(dog)
+    if ask is None or ask > p["max_price"] + 1e-12:
+        return None, f"underdog ask {ask} > max {p['max_price']}"
+    pw = flip_probability(st, dog)
+    if pw is None:
+        return None, "missing price/volatility data"
+    tick = st.tick_size or 0.01
+    limit = _round_tick(min(0.99, ask + p["limit_offset_ticks"] * tick), tick)
+    shares = size_order(p["stake_usd"], limit, st.min_order_size)
+    fee_ps = taker_fee(shares, limit, st.fee) / shares if shares else 0.0
+    breakeven = limit + fee_ps
+    if pw - breakeven < p["min_edge"]:
+        return None, f"model flip chance {pw:.3%} < price+fee {breakeven:.3%} + margin"
+    liq = st.ask_liquidity_usd(dog, max_price=limit)
+    if liq < p["min_liquidity_usd"]:
+        return None, f"liquidity ${liq:.2f} too low"
+    reasons = {"dog": dog, "dog_ask": ask, "model_flip_prob": pw, "breakeven": breakeven, "edge": pw - breakeven,
+               "dist_bps": st.dist_bps, "vol_30s": st.features.get("vol_30s"), "secs_remaining": secs, "liq_usd": liq}
+    cost = shares * breakeven
+    exp = {"max_cost": cost, "payout_if_win": shares, "net_if_win": shares - cost, "net_if_loss": -cost,
+           "breakeven_prob": breakeven, "model_win_prob": pw,
+           "expected_value": pw * (shares - cost) - (1 - pw) * cost}
+    return Decision(side=dog, limit_price=limit, shares=shares, order_type=p["order_type"], tif=p["tif"],
                     decision_ask=ask, reasons=reasons, expected=exp), None

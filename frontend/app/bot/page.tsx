@@ -10,7 +10,7 @@ import { price, signedUsd, usd } from "@/lib/format";
 const CHOICES = [
   { key: "K", name: "Safe favourite", tag: "Recommended", text: "In the last 30 seconds, buys the side that's almost sure to win (95%+). Small wins, rare big losses." },
   { key: "M", name: "Smart favourite", tag: "Data-driven", text: "Like Safe favourite, but only trades when past results prove it beats the fees. Trades less often." },
-  { key: "A", name: "Long shot", tag: "High risk", text: "Buys the cheap side for a few cents hoping for a last-second flip. Usually loses; one win pays ~20–50×." },
+  { key: "N", name: "Smart long shot", tag: "Checks the price", text: "Buys the cheap side only when the coin is close enough to flip and the real chance beats the price + fee. Never buys hopeless 1¢ shots." },
 ];
 const LOSS = [{ v: 25, l: "¼ of it" }, { v: 50, l: "Half" }, { v: 100, l: "All of it" }];
 const WIN = [{ v: 0, l: "Never" }, { v: 50, l: "+50%" }, { v: 100, l: "Double" }, { v: 200, l: "Triple" }];
