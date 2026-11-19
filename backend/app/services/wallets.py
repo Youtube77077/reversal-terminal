@@ -71,10 +71,12 @@ def _dict(s, w: Wallet) -> dict:
     lv = live_account(s, w)
     out = {"id": w.id, "name": w.name, "is_main": w.is_main, "key": key(w), "keys": credentials.masked(key(w)),
            "paper": {"id": p.id, "cash": p.cash, "reserved": p.reserved, "strategy_key": p.strategy_key,
+                     "params": json.loads(p.params_json or "{}"),
                      "session": session_status(s, p), "halted_reason": p.halted_reason},
            "live": None}
     if lv:
         out["live"] = {"id": lv.id, "cash": lv.cash, "reserved": lv.reserved, "strategy_key": lv.strategy_key,
+                       "params": json.loads(lv.params_json or "{}"),
                        "session": session_status(s, lv), "halted_reason": lv.halted_reason}
     return out
 

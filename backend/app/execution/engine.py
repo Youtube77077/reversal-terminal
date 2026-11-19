@@ -49,7 +49,7 @@ from .simulator import max_cost, simulate_passive_check
 log = logging.getLogger("reversal.engine")
 
 
-FAST_KEYS = {"O"}          # strategies evaluated by the sub-second loop
+FAST_KEYS = {"O", "X"}     # strategies evaluated by the sub-second loop
 FAST_MS = 50               # fallback: 20 checks per second (plus instantly on every order-book change)
 EXIT_EVERY_MS = 200        # take-profit checks (DB query) at most 5x per second
 FAST_WINDOW_MS = 125_000   # only the last ~2 minutes of each market
@@ -125,6 +125,13 @@ class TradingEngine:
         accounts, paused_assets = await asyncio.to_thread(self._load_accounts, exp)
         self._fast_accounts = [a for a in accounts if a["strategy_key"] in FAST_KEYS
                                and not a["paused"] and not a["halted_reason"]]
+        win = FAST_WINDOW_MS
+        for a in self._fast_accounts:
+            try:
+                win = max(win, int(float(json.loads(a["params_json"] or "{}").get("entry_max_secs") or 0) * 1000) + 5000)
+            except (ValueError, TypeError):
+                pass
+        self._fast_window_ms = win
         self._paused_assets = paused_assets
         if self._fast_accounts and (self._fast_task is None or self._fast_task.done()):
             self._fast_task = asyncio.create_task(self._fast_loop(), name="fast-strategy-loop")
@@ -221,8 +228,49 @@ class TradingEngine:
             return out, paused_assets
 
     # ================================================================ entry
+    def _custom_prepare(self, account_id: int, d: Decision, st: MarketState) -> str | None:
+        """Strategy Builder bots: stake from balance (capped by max loss per trade) + daily guards.
+        Returns a reason to skip, or None to go ahead (d.shares is resized in place)."""
+        import math
+        from datetime import datetime
+        from ..strategies.custom import AMS, merged, stake_usd
+        with session_scope() as s:
+            acct = s.get(Account, account_id)
+            if acct is None or acct.strategy_key != "X":
+                return None
+            p = merged(json.loads(acct.params_json or "{}"))
+            equity = self._equity_estimate(s, acct)
+            day0 = int(datetime.now(AMS).replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
+            today = s.scalars(select(Transaction).where(Transaction.account_id == account_id, Transaction.source == "live",
+                                                        Transaction.created_ts >= day0)).all()
+            open_n = sum(1 for t in today if t.status in ("pending", "filled", "partially_filled"))
+            settled = [t for t in today if t.status in ("won", "lost")]
+            losses = sum(1 for t in settled if (t.net_profit or 0) < 0)
+            day_pnl = sum((t.net_profit or 0) for t in settled)
+            start_bal = max(equity - day_pnl, 1e-9)
+        if int(p.get("max_open_positions") or 0) and open_n >= int(p["max_open_positions"]):
+            return "max open trades reached"
+        if int(p.get("max_trades_per_day") or 0) and len(today) >= int(p["max_trades_per_day"]):
+            return "max trades per day reached"
+        if int(p.get("max_losses_per_day") or 0) and losses >= int(p["max_losses_per_day"]):
+            return "stopped for today: too many losses"
+        if float(p.get("daily_loss_limit_pct") or 0) and -day_pnl >= start_bal * float(p["daily_loss_limit_pct"]) / 100:
+            return "stopped for today: daily loss limit"
+        if float(p.get("daily_profit_cap_pct") or 0) and day_pnl >= start_bal * float(p["daily_profit_cap_pct"]) / 100:
+            return "stopped for today: profit target reached"
+        stake = stake_usd(p, equity)
+        shares = math.floor(stake / d.limit_price * 100) / 100 if d.limit_price else 0
+        if shares < (st.min_order_size or 5) or shares * d.limit_price < max(1.0, float(p.get("min_order_usd") or 1)):
+            return f"stake ${stake:.2f} too small for a valid order"
+        d.shares = shares
+        return None
+
     async def _enter(self, account_id: int, st: MarketState, d: Decision, exp_id: str | None) -> None:
         try:
+            why = await asyncio.to_thread(self._custom_prepare, account_id, d, st)
+            if why:
+                self._done.add((account_id, st.market_id)) if "per day" in why or "today" in why else None
+                return
             opened = await asyncio.to_thread(self._open_order, account_id, st, d, exp_id)
             if not opened:
                 return
@@ -467,7 +515,7 @@ class TradingEngine:
                 if not self.paused:
                     now = now_ms()
                     markets = [m for m in list(self.collector.markets.values())
-                               if m.open_ts <= now < m.close_ts and (m.close_ts - now) <= FAST_WINDOW_MS]
+                               if m.open_ts <= now < m.close_ts and (m.close_ts - now) <= getattr(self, "_fast_window_ms", FAST_WINDOW_MS)]
                     if markets:
                         states = []
                         for m in markets:
@@ -570,8 +618,10 @@ class TradingEngine:
         for a in accounts:
             p = {**default_params(a["strategy_key"]), **json.loads(a["params_json"] or "{}")}
             tp = float(p.get("take_profit_price") or 0)
-            if 0 < tp < 1:
-                wanted[a["id"]] = tp
+            sp = float(p.get("stop_price") or 0) if a["strategy_key"] == "X" else 0.0
+            if 0 < tp < 1 or 0 < sp < 1:
+                wanted[a["id"]] = {"tp": tp if 0 < tp < 1 else None, "stop": sp if 0 < sp < 1 else None,
+                                   "z_stop": float(p.get("z_stop") or 0), "use_fast": bool(p.get("use_fast", True))}
         if not wanted:
             return
         todo = await asyncio.to_thread(self._exit_candidates, wanted, states)
@@ -614,11 +664,21 @@ class TradingEngine:
                 if st is None or st.secs_remaining <= 1.0:
                     continue
                 bids = st.bids(tx.outcome)
-                tp = wanted[tx.account_id]
-                if not bids or bids[0][0] < tp - 1e-9:
+                w = wanted[tx.account_id]
+                if not bids:
+                    continue
+                price = None
+                if w["tp"] and bids[0][0] >= w["tp"] - 1e-9:
+                    price = w["tp"]                                   # take profit
+                elif w["stop"] and bids[0][0] <= w["stop"] + 1e-9:
+                    from ..strategies.custom import safety_z
+                    z = safety_z(st, tx.outcome, w["use_fast"])
+                    if z is None or z < w["z_stop"]:                    # only sell when really at risk
+                        price = max(0.01, round(bids[0][0] - 0.05, 2))  # stop: accept up to 5c below best bid
+                if price is None:
                     continue
                 acct = s.get(Account, tx.account_id)
-                out.append((tx.id, tx.mode, st, tx.outcome, tx.filled_shares, tp, st.token(tx.outcome),
+                out.append((tx.id, tx.mode, st, tx.outcome, tx.filled_shares, price, st.token(tx.outcome),
                             wallet_key_for_account(s, acct)))
         return out
 

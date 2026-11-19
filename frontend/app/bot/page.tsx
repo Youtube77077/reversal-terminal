@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import { post, qs, usePoll } from "@/lib/api";
 import { price, signedUsd, usd } from "@/lib/format";
 import WalletBar from "@/components/WalletBar";
+import { PARAM_LABELS, strategySummary } from "@/lib/strategy";
 import { useWallet } from "@/lib/wallet";
 
 /* The 3 simple strategy choices (the rest live in Strategy Lab). */
@@ -42,10 +43,17 @@ export default function BotPage() {
   useEffect(() => setCfg(DEFAULTS[strat] || DEFAULTS.K), [strat]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const { data: customs } = usePoll<any[]>("/api/custom-strategies", 0);
+  const [customId, setCustomId] = useState<number | null>(null);
+  const custom = (customs || []).find((c) => c.id === customId) || null;
+  useEffect(() => {          // "Use on a wallet" from the Strategy Builder: /bot/?custom=ID
+    const c = Number(new URLSearchParams(window.location.search).get("custom"));
+    if (c) { setCustomId(c); setStrat("X"); }
+  }, []);
 
   const { wallet, reload: reloadW } = useWallet();
   const mk = (x: any, mode: string) => x ? { id: x.id, mode, session: x.session, halted_reason: x.halted_reason,
-    summary: { equity: x.cash + x.reserved } } : null;
+    strategy_key: x.strategy_key, params: x.params || {}, summary: { equity: x.cash + x.reserved } } : null;
   const paperAcct = mk(wallet?.paper, "paper");
   const liveAcct = mk(wallet?.live, "live");
   const paperBal = paperAcct?.summary.equity ?? 0;
@@ -72,11 +80,13 @@ export default function BotPage() {
     if (budget < 1) return setErr("Budget must be at least $1");
     setBusy(true); setErr(null);
     try {
+      if (strat === "X" && !custom) throw new Error("Pick one of your strategies first.");
       if (!real && budget > paperBal + 1e-9) throw new Error(`This wallet has ${usd(paperBal)} practice money. Add money first (Wallets → Add).`);
       await post(`/api/accounts/${acct.id}/session/start`, {
         risk_budget_mode: "amount", risk_budget_value: budget,
         stop_loss_pct: loss, take_profit_mode: win ? "percent" : "off", take_profit_value: win, strategy_key: strat,
-        params: { ...cfg, assets: coins.length === COINS.length ? [] : coins, windows: wins.length ? wins : ["5m"] },
+        params: strat === "X" && custom ? { ...custom.params, custom_id: custom.id, custom_name: custom.name }
+          : { ...cfg, assets: coins.length === COINS.length ? [] : coins, windows: wins.length ? wins : ["5m"] },
       });
       (window as any).ReversalNative?.haptic("success");
       reload(); reloadW();
@@ -131,7 +141,7 @@ export default function BotPage() {
                 <div className="mt-5 text-[13px] font-bold opacity-75">Strategy</div>
                 <div className="mt-2 space-y-2">
                   {CHOICES.map((c) => (
-                    <button key={c.key} onClick={() => setStrat(c.key)}
+                    <button key={c.key} onClick={() => { setStrat(c.key); setCustomId(null); }}
                       className={clsx("flex w-full items-start gap-3 rounded-3xl p-4 text-left transition", strat === c.key ? "bg-black text-white" : "bg-black/10")}>
                       <span className={clsx("mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full", strat === c.key ? "bg-cash text-black" : "bg-black/15")}>
                         {strat === c.key && <Check size={14} strokeWidth={3} />}</span>
@@ -142,6 +152,23 @@ export default function BotPage() {
                   ))}
                 </div>
 
+                <div className="mt-5 flex items-center justify-between text-[13px] font-bold opacity-75">
+                  <span>Your strategies (Strategy Builder)</span><Link href="/strategies" className="underline">create / edit</Link></div>
+                <div className="mt-2 space-y-2">
+                  {(customs || []).map((c) => {
+                    const on = strat === "X" && customId === c.id;
+                    return (
+                      <button key={c.id} onClick={() => { setStrat("X"); setCustomId(c.id); }}
+                        className={clsx("flex w-full items-start gap-3 rounded-3xl p-4 text-left transition", on ? "bg-black text-white" : "bg-black/10")}>
+                        <span className={clsx("mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full", on ? "bg-cash text-black" : "bg-black/15")}>
+                          {on && <Check size={14} strokeWidth={3} />}</span>
+                        <span><span className="block text-[16px] font-bold">{c.name}</span>
+                          <span className="mt-0.5 block text-[13px] leading-snug opacity-80">{strategySummary(c.params)}</span></span>
+                      </button>
+                    );
+                  })}
+                </div>
+                {strat !== "X" && <>
                 {/* 5. markets + settings */}
                 <div className="mt-5 text-[13px] font-bold opacity-75">Markets</div>
                 <div className="mt-2 flex flex-wrap gap-2">
@@ -179,6 +206,14 @@ export default function BotPage() {
                         <span className="block text-[11px] font-semibold opacity-70">Safer but ~15× fewer trades. Backtest: off = $100 → $216 (117 trades), on = $100 → $127 (8 trades).</span>
                       </button>
                     </>}
+                  </div>
+                )}
+                </>}
+                {strat === "X" && custom && (
+                  <div className="mt-4 rounded-3xl bg-black/10 p-4 text-[13px]">
+                    <div className="font-bold">Settings come from the Strategy Builder</div>
+                    <div className="mt-1 opacity-80">{strategySummary(custom.params)}</div>
+                    <Link href="/strategies" className="mt-2 inline-block font-bold underline">Edit or test this strategy</Link>
                   </div>
                 )}
                 {err && <div className="mt-4 rounded-2xl bg-black/15 px-4 py-3 text-center text-[14px] font-semibold">{err}</div>}
@@ -230,6 +265,7 @@ function Running({ acct, ss, busy, onStop }: { acct: any; ss: any; busy: boolean
       <div className="mt-6 grid grid-cols-3 gap-2 text-center">
         <Box k="Budget" v={usd(ss.risk_budget)} /><Box k="In trades" v={usd(ss.open_at_risk)} /><Box k="Can still use" v={usd(left)} />
       </div>
+      <BotSettings acct={acct} />
       <div className="mt-6 text-[13px] font-bold opacity-75">Where your money went</div>
       <div className="mt-2 space-y-2">
         {trades.length === 0 && <div className="rounded-3xl bg-black/10 p-4 text-[14px] opacity-80">No trades yet. Keep the app closed or open — the bot keeps running on the server.</div>}
@@ -264,5 +300,40 @@ function Num({ label, value, onChange }: { label: string; value: number; onChang
       <input inputMode="decimal" value={String(value)} onChange={(e) => onChange(Number(e.target.value.replace(/[^0-9.]/g, "")) || 0)}
         className="num w-full bg-transparent text-[18px] font-bold outline-none" />
     </label>
+  );
+}
+
+
+const NAMES: Record<string, string> = { K: "Safe favourite", M: "Smart favourite", N: "Smart long shot", O: "Smart future trading", X: "Custom strategy" };
+
+function fmtVal(k: string, v: any) {
+  if (Array.isArray(v)) return v.length ? v.join(", ") : "all";
+  if (typeof v === "boolean") return v ? "yes" : "no";
+  if (typeof v === "number" && /price/.test(k) && v > 0 && v < 1) return `${Math.round(v * 1000) / 10}¢`;
+  return String(v);
+}
+
+/** Tap "Settings" on a running bot to see exactly what it does. */
+function BotSettings({ acct }: { acct: any }) {
+  const [open, setOpen] = useState(false);
+  const p = acct.params || {};
+  const name = p.custom_name || NAMES[acct.strategy_key] || acct.strategy_key;
+  const keys = Object.keys(p).filter((k) => !["custom_id"].includes(k));
+  return (
+    <div className="mt-6 rounded-3xl bg-black/10 p-4">
+      <button onClick={() => setOpen(!open)} className="flex w-full items-center justify-between text-left">
+        <span><span className="block text-[12px] font-bold opacity-70">Running strategy</span><span className="text-[16px] font-bold">{name}</span></span>
+        <span className="text-[13px] font-bold underline">{open ? "Hide settings" : "Show settings"}</span>
+      </button>
+      {acct.strategy_key === "X" && <p className="mt-2 text-[13px] opacity-80">{strategySummary(p)}</p>}
+      {open && (
+        <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1 text-[12.5px]">
+          {keys.length === 0 && <span className="opacity-70">Default settings</span>}
+          {keys.map((k) => (
+            <div key={k} className="contents"><span className="opacity-70">{PARAM_LABELS[k] || k}</span><span className="text-right font-semibold">{fmtVal(k, p[k])}</span></div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

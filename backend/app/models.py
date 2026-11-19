@@ -574,3 +574,14 @@ class ResearchObs15(Base):
     down_bids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     spot: Mapped[float | None] = mapped_column(Float, nullable=True)
     fast_spot: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class CustomStrategy(Base):
+    """A strategy built in the Strategy Builder (runs as strategy key "X")."""
+    __tablename__ = "custom_strategies"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(60))
+    params_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_ts: Mapped[int] = mapped_column(BigInteger)
+    updated_ts: Mapped[int] = mapped_column(BigInteger)
+    deleted: Mapped[bool] = mapped_column(Boolean, default=False)

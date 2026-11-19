@@ -40,6 +40,18 @@ _setup_logging()
 log = logging.getLogger("reversal")
 
 
+async def _backtest_warm():
+    """Keep the Strategy Builder's test data loaded and fresh (new markets every 5 minutes)."""
+    from .services import custom_backtest as cb
+    await asyncio.sleep(20)
+    while True:
+        try:
+            await asyncio.to_thread(cb.data, True)
+        except Exception:
+            log.exception("strategy builder data refresh failed")
+        await asyncio.sleep(300)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     run_migrations()
@@ -58,7 +70,8 @@ async def lifespan(app: FastAPI):
     bg = [asyncio.create_task(experiment_watchdog(), name="experiment-watchdog"),
           asyncio.create_task(backup.backup_loop(), name="backup-loop"),
           asyncio.create_task(_maintenance(collector), name="maintenance"),
-          asyncio.create_task(_live_watch(collector), name="live-watch")]
+          asyncio.create_task(_live_watch(collector), name="live-watch"),
+          asyncio.create_task(_backtest_warm(), name="backtest-warm")]
     log.info("REVERSAL TERMINAL backend ready on http://%s:%s (PAPER mode)", settings.api_host, settings.api_port)
     try:
         yield

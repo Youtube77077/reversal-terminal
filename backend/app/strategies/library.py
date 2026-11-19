@@ -71,6 +71,13 @@ STRATEGIES: dict[str, dict] = {
 
 FAVOURITE_KEYS = {"K", "L", "M"}
 
+STRATEGIES["X"] = {
+    "name": "Custom strategy",
+    "description": "A strategy you built in the Strategy Builder (any side, price range, timing, safety margin, "
+                   "loss protection). Settings are stored with the bot.",
+    "params": {},
+}
+
 STRATEGIES["O"] = {
     "name": "Smart Future Trading",
     "description": "Checks fast exchange prices (Binance, Coinbase, OKX - ~2 s ahead of the settlement feed) and "
@@ -174,6 +181,9 @@ def evaluate(key: str, st: MarketState, params: dict, ctx: StrategyContext,
         return _evaluate_smart_longshot(st, p)
     if key == "O":
         return _evaluate_future(st, p, diag)
+    if key == "X":
+        from .custom import evaluate_custom
+        return evaluate_custom(st, params, diag)
     if key == "F":
         t = float(p["entry_t"])
         if abs(secs - t) > 0.5:

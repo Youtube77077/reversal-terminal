@@ -156,6 +156,80 @@ async def reversal_curves():
     return await asyncio.to_thread(charts.reversal_curves)
 
 
+# ================================================================ Strategy Builder
+from pydantic import BaseModel as _BM
+
+
+class _StratIn(_BM):
+    name: str | None = None
+    params: dict | None = None
+
+
+class _TestIn(_BM):
+    params: dict
+    start_balance: float = 100.0
+    days: float | None = None
+
+
+class _CodeIn(_BM):
+    code: str
+
+
+@router.get("/custom-strategies")
+async def custom_list():
+    from ..services import custom_strategies as cs
+    return await asyncio.to_thread(cs.list_all)
+
+
+@router.get("/custom-strategies/fields")
+def custom_fields():
+    from ..strategies.custom import DEFAULTS, LABELS
+    return {"defaults": DEFAULTS, "labels": LABELS}
+
+
+@router.post("/custom-strategies")
+def custom_create(body: _StratIn):
+    from ..services import custom_strategies as cs
+    return cs.create(body.name or "My strategy", body.params or {})
+
+
+@router.patch("/custom-strategies/{sid}")
+def custom_update(sid: int, body: _StratIn):
+    from fastapi import HTTPException
+    from ..services import custom_strategies as cs
+    try:
+        return cs.update(sid, body.name, body.params)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+
+
+@router.delete("/custom-strategies/{sid}")
+def custom_delete(sid: int):
+    from fastapi import HTTPException
+    from ..services import custom_strategies as cs
+    try:
+        cs.delete(sid)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    return {"deleted": True}
+
+
+@router.post("/custom-strategies/decode")
+def custom_decode(body: _CodeIn):
+    from fastapi import HTTPException
+    from ..services import custom_strategies as cs
+    try:
+        return cs.from_code(body.code)
+    except Exception as e:
+        raise HTTPException(400, f"Could not read that code: {e}")
+
+
+@router.post("/custom-strategies/test")
+async def custom_test(body: _TestIn):
+    from ..services import custom_backtest as cb
+    return await asyncio.to_thread(cb.run, body.params, max(1.0, body.start_balance), body.days)
+
+
 @router.get("/accounts/{account_id}/report")
 async def bot_report(account_id: int):
     from ..services import bot_report as br
