@@ -224,6 +224,12 @@ def custom_decode(body: _CodeIn):
         raise HTTPException(400, f"Could not read that code: {e}")
 
 
+@router.get("/custom-strategies/data-status")
+def custom_data_status():
+    from ..services import custom_backtest as cb
+    return cb.status()
+
+
 @router.post("/custom-strategies/test")
 async def custom_test(body: _TestIn):
     from ..services import custom_backtest as cb

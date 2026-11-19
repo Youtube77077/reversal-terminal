@@ -71,6 +71,17 @@ def data(force: bool = False) -> dict:
         return _cache["data"]
 
 
+def status() -> dict:
+    """What test data is loaded right now (for the Strategy Builder header)."""
+    D = _cache.get("data")
+    if not D or D.get("markets") is None or len(D["markets"]) == 0:
+        return {"loaded": False}
+    mk = D["markets"]
+    return {"loaded": True, "markets": int(len(mk)), "markets_5m": int((mk.window == "5m").sum()),
+            "markets_15m": int((mk.window == "15m").sum()), "first_ts": int(mk.open_ts.min()), "newest_ts": int(mk.close_ts.max()),
+            "updated_ts": int(_cache["ts"] * 1000), "refresh_minutes": 5}
+
+
 def _levels(js) -> list[tuple[float, float]]:
     try:
         return sorted((float(p), float(q)) for p, q in json.loads(js or "[]"))
@@ -230,7 +241,12 @@ def run(params: dict, start_balance: float = 100.0, days: float | None = None) -
     out = {"start_balance": start_balance, "end_balance": round(bal, 2), "markets_tested": int(len(sel)),
            "first_ts": int(sel.open_ts.min()) if len(sel) else None, "last_ts": int(sel.close_ts.max()) if len(sel) else None,
            "trades": int(len(T)), "skipped": skipped, "filter_reasons": dict(sorted(reasons.items(), key=lambda x: -x[1])[:8]),
-           "curve": curve, "trade_list": trades[-500:][::-1]}
+           "curve": curve, "trade_list": trades[-500:][::-1],
+           # how much data this test used (grows every 5 minutes as new markets finish)
+           "markets_by_window": {w: int((sel.window == w).sum()) for w in ("5m", "15m")},
+           "markets_with_signal": int(len(decisions)),
+           "data_updated_ts": int(_cache["ts"] * 1000) if _cache["ts"] else None,
+           "all_recorded": status()}
     if len(T):
         bal_series = pd.Series([c["balance"] for c in curve])
         streak = best = 0

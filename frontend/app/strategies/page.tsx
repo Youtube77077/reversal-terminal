@@ -17,6 +17,7 @@ const tm = (ms: number) => new Date(ms).toLocaleString([], { month: "short", day
 function Builder() {
   const { data: list, reload } = usePoll<any[]>("/api/custom-strategies", 0);
   const { data: fields } = usePoll<any>("/api/custom-strategies/fields", 0);
+  const { data: ds } = usePoll<any>("/api/custom-strategies/data-status", 60000);
   const [edit, setEdit] = useState<{ id?: number; name: string; params: P } | null>(null);
   const [res, setRes] = useState<any>(null);
   const [testing, setTesting] = useState(false);
@@ -58,6 +59,7 @@ function Builder() {
       {msg && <div className="fixed left-1/2 top-4 z-[70] -translate-x-1/2 rounded-full bg-ink px-4 py-2 text-[13px] font-bold text-bg">{msg}</div>}
       {err && <div className="rounded-2xl bg-down/10 px-4 py-3 text-[13px] text-down">{err}</div>}
 
+      <DataStatus ds={ds} />
       {!edit && <>
         <div className="flex flex-wrap gap-2">
           <button onClick={() => { setEdit({ name: "My strategy", params: { ...(fields?.defaults || {}) } }); setRes(null); }}
@@ -185,7 +187,13 @@ function Results({ r }: { r: any }) {
   return (
     <section className="panel p-5">
       <h3 className="text-[18px] font-bold">Test result: $100 → <span className={up ? "text-up" : "text-down"}>${r.end_balance?.toFixed(2)}</span></h3>
-      <p className="text-[12px] text-faint">{r.markets_tested} recorded markets · {r.first_ts ? `${tm(r.first_ts)} → ${tm(r.last_ts)}` : ""} · {r.hours}h · past results don't guarantee future results</p>
+      <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <T k="Markets tested" v={`${r.markets_tested}`} sub={`${r.markets_by_window?.["5m"] ?? 0} five-min · ${r.markets_by_window?.["15m"] ?? 0} fifteen-min`} />
+        <T k="Markets where it found a signal" v={`${r.markets_with_signal ?? 0}`} sub={`traded in ${r.trades ?? 0}`} />
+        <T k="Period tested" v={r.hours ? `${r.hours} hours` : "—"} sub={r.first_ts ? `${tm(r.first_ts)} → ${tm(r.last_ts)}` : ""} />
+        <T k="Data updated" v={r.data_updated_ts ? ago(r.data_updated_ts) : "—"} sub="new markets added every 5 minutes" />
+      </div>
+      <p className="mt-2 text-[12px] text-faint">The more markets recorded, the more reliable this test becomes. Past results don't guarantee future results.</p>
       {r.trades ? <>
         <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
           <T k="Profit / loss" v={money(r.pnl)} tone={up ? "up" : "down"} sub={`${r.return_pct}% · ~${r.per_day_pct}%/day`} />
@@ -251,3 +259,24 @@ function Curve({ pts }: { pts: { ts: number; balance: number }[] }) {
 }
 
 export default function StrategiesPage() { return <Suspense><Builder /></Suspense>; }
+
+
+function ago(ms: number) {
+  const m = Math.max(0, Math.round((Date.now() - ms) / 60000));
+  return m < 1 ? "just now" : m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`;
+}
+
+function DataStatus({ ds }: { ds: any }) {
+  if (!ds) return null;
+  if (!ds.loaded) return <div className="panel p-4 text-[13px] text-dim">Loading test data… (first load takes about 30 seconds after an update)</div>;
+  const hours = Math.round((ds.newest_ts - ds.first_ts) / 3600000);
+  return (
+    <div className="panel flex flex-wrap items-center gap-x-5 gap-y-1 p-4 text-[13px]">
+      <span className="font-bold">Test data: {ds.markets.toLocaleString()} markets</span>
+      <span className="text-dim">{ds.markets_5m.toLocaleString()} five-min · {ds.markets_15m.toLocaleString()} fifteen-min</span>
+      <span className="text-dim">{hours} hours recorded</span>
+      <span className="text-dim">newest market ended {ago(ds.newest_ts)}</span>
+      <span className="text-dim">updated {ago(ds.updated_ts)} · refreshes every {ds.refresh_minutes} min</span>
+    </div>
+  );
+}
