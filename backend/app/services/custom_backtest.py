@@ -20,7 +20,7 @@ from sqlalchemy import text
 
 from ..db import engine
 from ..providers.polymarket.fees import FeeSchedule, taker_fee
-from ..strategies.custom import AMS, evaluate_custom, merged, safety_z, stake_usd
+from ..strategies.custom import AMS, evaluate_custom, merged, safety_z, scalp_exit, stake_usd
 from .market_state import MarketState
 
 _cache: dict = {"ts": 0.0, "data": None}
@@ -150,6 +150,31 @@ def _state(m, a: dict, i: int, ptb) -> MarketState:
     return st
 
 
+def _find_exit(p: dict, a: dict, side: str, j0: int, entry_px: float, m, ptb):
+    """First moment after buying when the strategy would sell early: (how, ts, bid) or None = hold to the end."""
+    tp, sp, zs = float(p.get("take_profit_price") or 0), float(p.get("stop_price") or 0), float(p.get("z_stop") or 0)
+    rel = float(p.get("take_profit_cents") or 0) > 0 or float(p.get("stop_loss_cents") or 0) > 0
+    if not (0 < tp < 1 or 0 < sp < 1 or rel):
+        return None
+    bids = a["up_bid"] if side == "UP" else a["down_bid"]
+    for r in range(j0, len(bids)):
+        bid = float(bids[r])
+        if bid != bid:
+            continue
+        if 0 < tp < 1 and bid >= tp:
+            return "sold early (take profit)", int(a["ts"][r]), bid
+        x = scalp_exit(p, entry_px, bid, FEE) if rel else None
+        if x == "take profit":
+            return "sold early (take profit)", int(a["ts"][r]), bid
+        if 0 < sp < 1 and bid <= sp:
+            z = safety_z(_state(m, a, r, ptb), side, bool(p.get("use_fast")))
+            if z is None or z < zs:
+                return "stop-loss", int(a["ts"][r]), bid
+        if x == "stop":
+            return "stop-loss", int(a["ts"][r]), bid
+    return None
+
+
 def _key(params: dict, start_balance: float, days) -> str:
     return json.dumps([merged(params), start_balance, days], sort_keys=True, default=str)
 
@@ -174,6 +199,9 @@ def run(params: dict, start_balance: float = 100.0, days: float | None = None, p
     lo_p, hi_p = float(p["min_price"]), float(p["max_price"])
     t_lo, t_hi = float(p["entry_min_secs"]), float(p["entry_max_secs"])
     side_mode = p.get("side", "favourite")
+    per_mkt = int(p.get("max_trades_per_market", 1) or 0)
+    per_mkt = 10 ** 9 if per_mkt <= 0 else per_mkt
+    cool_ms = float(p.get("reentry_cooldown_secs") or 0) * 1000
     decisions, reasons = [], {}
     total = int(len(sel))
     if progress:
@@ -191,14 +219,19 @@ def run(params: dict, start_balance: float = 100.0, days: float | None = None, p
             ask = np.where(a["fav_up"], a["down_ask"], a["up_ask"])
         elif side_mode in ("up", "UP"):
             ask = a["up_ask"]
+        elif side_mode == "predicted":            # either side may be bought: prefilter on the cheaper rule below
+            ask = np.where((a["up_ask"] >= lo_p - 1e-9) & (a["up_ask"] <= hi_p + 1e-9), a["up_ask"], a["down_ask"])
         else:
             ask = a["down_ask"]
         secs = a["secs"]
         with np.errstate(invalid="ignore"):
             idx = np.flatnonzero((secs >= t_lo) & (secs <= t_hi) & (ask >= lo_p - 1e-9) & (ask <= hi_p + 1e-9))
         ts = a["ts"]; n = len(ts)
+        n_here, free_ts = 0, -1
         for i in idx:
             i = int(i)
+            if ts[i] <= free_ts:                              # still holding / cooling down in this market
+                continue
             dcs, why = evaluate_custom(_state(m, a, i, ptb), p)
             if dcs is None:
                 r_ = why.split(" ")[0] if why else "?"
@@ -209,12 +242,17 @@ def run(params: dict, start_balance: float = 100.0, days: float | None = None, p
                 j += 1
             if j >= n:
                 break
+            lv = _levels(a["ua"][j] if dcs.side == "UP" else a["da"][j])
+            entry_px = next((px for px, _q in lv if px <= dcs.limit_price + 1e-9), dcs.limit_price)
+            ex = _find_exit(p, a, dcs.side, j + 1, entry_px, m, ptb)
             decisions.append({"mid": mid, "asset": m.asset, "window": m.window, "ts": int(ts[i]),
                               "secs": float(secs[i]), "side": dcs.side, "ask": dcs.decision_ask, "limit": dcs.limit_price,
-                              "fill_levels": _levels(a["ua"][j] if dcs.side == "UP" else a["da"][j]),
-                              "close": int(m.close_ts), "won": m.winner == dcs.side, "z": dcs.reasons.get("z"),
-                              "model": dcs.reasons.get("model_win_prob"), "after": (a, j + 1), "m": m, "ptb": ptb})
-            break
+                              "fill_levels": lv, "close": int(m.close_ts), "won": m.winner == dcs.side, "z": dcs.reasons.get("z"),
+                              "model": dcs.reasons.get("model_win_prob"), "exit": ex})
+            n_here += 1
+            if ex is None or n_here >= per_mkt:
+                break
+            free_ts = ex[1] + cool_ms
     # ---- chronological money simulation
     decisions.sort(key=lambda x: x["ts"])
     bal = start_balance
@@ -275,28 +313,18 @@ def run(params: dict, start_balance: float = 100.0, days: float | None = None, p
         bal -= cost
         ds["trades"] += 1
         # exits
-        tp, sp, zs = float(p.get("take_profit_price") or 0), float(p.get("stop_price") or 0), float(p.get("z_stop") or 0)
-        proceeds, how, exit_ts = None, None, dcs["close"]
-        if 0 < tp < 1 or 0 < sp < 1:
-            a, j0 = dcs["after"]
-            bids = a["up_bid"] if dcs["side"] == "UP" else a["down_bid"]
-            for r in range(j0, len(bids)):
-                bid = float(bids[r])
-                if bid != bid:
-                    continue
-                if 0 < tp < 1 and bid >= tp:
-                    proceeds, how, exit_ts = got * bid - taker_fee(got, bid, FEE), "sold early (take profit)", int(a["ts"][r]); break
-                if 0 < sp < 1 and bid <= sp:
-                    z = safety_z(_state(dcs["m"], a, r, dcs["ptb"]), dcs["side"], bool(p.get("use_fast")))
-                    if z is None or z < zs:
-                        proceeds, how, exit_ts = got * bid - taker_fee(got, bid, FEE), "stop-loss", int(a["ts"][r]); break
+        proceeds, how, exit_ts, sold_at = None, None, dcs["close"], None
+        if dcs["exit"]:
+            how, exit_ts, sold_at = dcs["exit"]
+            proceeds = got * sold_at - taker_fee(got, sold_at, FEE)
         if proceeds is None:
             proceeds = got if dcs["won"] else 0.0
             how = "won" if dcs["won"] else "lost"
         tr = {"time": dcs["ts"], "coin": dcs["asset"], "window": dcs["window"], "side": dcs["side"], "secs_left": round(dcs["secs"]),
               "price": round(avg, 4), "shares": round(got, 2), "cost": round(cost, 4), "fee": round(fee, 4),
               "result": how, "payout": round(proceeds, 4), "pnl": round(proceeds - cost, 4), "z": None if dcs["z"] is None else round(dcs["z"], 2),
-              "model": None if dcs["model"] is None else round(dcs["model"], 3), "would_have_won": dcs["won"], "balance_after": None}
+              "model": None if dcs["model"] is None else round(dcs["model"], 3), "would_have_won": dcs["won"], "balance_after": None,
+              "sold_at": None if sold_at is None else round(sold_at, 3), "held_secs": round((exit_ts - dcs["ts"]) / 1000)}
         trades.append(tr)
         open_pos.append({"exit_ts": exit_ts, "proceeds": proceeds, "cost": cost, "trade": tr, "day": day})
     settle_until(10 ** 15)
@@ -307,7 +335,7 @@ def run(params: dict, start_balance: float = 100.0, days: float | None = None, p
            "curve": curve, "trade_list": trades[-500:][::-1],
            # how much data this test used (grows every 5 minutes as new markets finish)
            "markets_by_window": {w: int((sel.window == w).sum()) for w in ("5m", "15m")},
-           "markets_with_signal": int(len(decisions)),
+           "markets_with_signal": int(len({d_["mid"] for d_ in decisions})),
            "data_updated_ts": int(_cache["ts"] * 1000) if _cache["ts"] else None,
            "all_recorded": status()}
     if len(T):

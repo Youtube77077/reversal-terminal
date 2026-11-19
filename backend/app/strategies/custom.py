@@ -4,7 +4,8 @@ One generic, fully parameterised rule. The SAME function is used live (engine) a
 backtest (services.custom_backtest), so test results and live paper trading are comparable.
 
 Parameters (all optional; defaults in DEFAULTS):
-  side              favourite | underdog | up | down
+  side              favourite | underdog | up | down | predicted (side the fast exchange prices say is
+                    worth more than Polymarket's price right now = biggest model edge)
   min_price/max_price   ask range we are willing to pay (0-1)
   entry_min_secs/entry_max_secs   only buy while this many seconds are left
   z_min / z_max     safety margin of OUR side vs the price to beat, in standard deviations of the
@@ -18,6 +19,10 @@ Parameters (all optional; defaults in DEFAULTS):
   min_order_usd / max_order_usd
   take_profit_price sell early when our bid reaches this (0 = hold to the end)
   stop_price/z_stop sell early if bid <= stop_price AND safety margin z < z_stop (0 = off)
+  take_profit_cents sell once profit per share AFTER both fees reaches this many cents (0 = off)
+  stop_loss_cents   sell once the loss per share after fees reaches this many cents (0 = off)
+  max_trades_per_market  buy again in the same market after selling (0 = unlimited); one open trade per market at a time
+  reentry_cooldown_secs  wait this long after selling before buying again in that market
   max_open_positions, max_trades_per_day, max_losses_per_day, daily_loss_limit_pct, daily_profit_cap_pct
   windows           ["5m"] / ["15m"] / both;  assets: [] = all coins
 """
@@ -38,6 +43,7 @@ DEFAULTS = {
     "min_order_usd": 1.0, "max_order_usd": 750.0, "limit_offset_ticks": 0, "take_profit_price": 0.0,
     "stop_price": 0.0, "z_stop": 1.0, "max_open_positions": 3, "max_trades_per_day": 0, "max_losses_per_day": 3,
     "daily_loss_limit_pct": 15.0, "daily_profit_cap_pct": 0.0, "windows": ["5m"], "assets": [],
+    "take_profit_cents": 0.0, "stop_loss_cents": 0.0, "max_trades_per_market": 1, "reentry_cooldown_secs": 5.0,
     "order_type": "marketable_limit", "tif": "FAK",
 }
 
@@ -54,6 +60,8 @@ LABELS = {
     "max_trades_per_day": "Max trades per day (0 = no limit)", "max_losses_per_day": "Stop for the day after … losses",
     "daily_loss_limit_pct": "Stop for the day after losing …%", "daily_profit_cap_pct": "Stop for the day after gaining …% (0 = off)",
     "windows": "Markets", "assets": "Coins",
+    "take_profit_cents": "Take profit: + … ¢ per share after fees", "stop_loss_cents": "Stop-loss: − … ¢ per share after fees",
+    "max_trades_per_market": "Max trades per market (0 = unlimited)", "reentry_cooldown_secs": "Wait … s before buying again",
 }
 
 
@@ -105,6 +113,37 @@ def pick_side(st, p: dict) -> str | None:
     return fav if s == "favourite" else ("DOWN" if fav == "UP" else "UP")
 
 
+def predicted_side(st, p: dict) -> str | None:
+    """The side whose model chance (from the fast exchange prices, ~2 s ahead of Polymarket) is furthest
+    above its price + fee: the side Polymarket has not caught up with yet."""
+    from .library import flip_probability
+    pu = flip_probability(st, "UP", use_fast=bool(p.get("use_fast", True)))
+    if pu is None:
+        return None
+    best, best_e = None, -9.0
+    for side, pw in (("UP", pu), ("DOWN", 1.0 - pu)):
+        ask = st.ask(side)
+        if ask is None or not 0 < ask < 1:
+            continue
+        e = pw - ask - taker_fee(1.0, ask, st.fee)
+        if e > best_e:
+            best, best_e = side, e
+    return best
+
+
+def scalp_exit(p: dict, entry_px: float, bid: float, fee) -> str | None:
+    """Relative exits: profit / loss per share AFTER the buy fee and the sell fee."""
+    tpc, slc = float(p.get("take_profit_cents") or 0) / 100, float(p.get("stop_loss_cents") or 0) / 100
+    if tpc <= 0 and slc <= 0:
+        return None
+    net = bid - taker_fee(1.0, bid, fee) - (entry_px + taker_fee(1.0, entry_px, fee))
+    if tpc > 0 and net >= tpc - 1e-9:
+        return "take profit"
+    if slc > 0 and net <= -slc + 1e-9:
+        return "stop"
+    return None
+
+
 def in_blackout(ts_ms: int) -> bool:
     x = datetime.fromtimestamp(ts_ms / 1000, AMS)
     return x.weekday() < 5 and (14, 25) <= (x.hour, x.minute) < (14, 45)
@@ -119,7 +158,12 @@ def evaluate_custom(st, params: dict, diag: dict | None = None):
         return None, "outside entry window"
     if not st.book_ok:
         return None, "order book not ready"
-    side = pick_side(st, p)
+    if p.get("side") == "predicted":
+        side = predicted_side(st, p)
+        if side is None:
+            return None, "no prediction yet (missing price data)"
+    else:
+        side = pick_side(st, p)
     if side is None:
         return None, "no prices"
     ask = st.ask(side)

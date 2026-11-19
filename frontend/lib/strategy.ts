@@ -1,10 +1,13 @@
 /** Plain-English one-liner for a Strategy Builder strategy's settings. */
 export function strategySummary(p: Record<string, any>) {
   if (!p) return "";
-  const side = ({ favourite: "favourite", underdog: "underdog", up: "UP", down: "DOWN" } as Record<string, string>)[p.side] || p.side;
+  const side = ({ favourite: "favourite", underdog: "underdog", up: "UP", down: "DOWN", predicted: "side the fast prices predict" } as Record<string, string>)[p.side] || p.side;
+  const scalp = p.take_profit_cents
+    ? ` Sells at +${p.take_profit_cents}¢ per share after fees${p.stop_loss_cents ? `, stop-loss −${p.stop_loss_cents}¢` : ""}; ${(p.max_trades_per_market ?? 1) === 0 ? "unlimited" : p.max_trades_per_market} trade(s) per market.`
+    : "";
   return `Buys the ${side} at ${Math.round((p.min_price ?? 0) * 100)}–${Math.round((p.max_price ?? 0) * 100)}¢ with ${p.entry_min_secs}–${p.entry_max_secs}s left` +
     `${p.z_min ? `, safety margin z ≥ ${p.z_min}` : ""}. Stake ${p.stake_mode === "fixed" ? `$${p.stake_value}` : `${p.stake_value}% of balance`}, ` +
-    `max loss ${p.max_loss_pct}% per trade. ${p.take_profit_price ? `Sells at ${Math.round(p.take_profit_price * 100)}¢.` : "Holds to the end."}`;
+    `max loss ${p.max_loss_pct}% per trade.` + (scalp || (p.take_profit_price ? ` Sells at ${Math.round(p.take_profit_price * 100)}¢.` : " Holds to the end."));
 }
 
 /** Human labels for every setting a running bot can have (built-in strategies + custom). */
@@ -18,4 +21,6 @@ export const PARAM_LABELS: Record<string, string> = {
   max_losses_per_day: "Stop after … losses/day", daily_loss_limit_pct: "Daily loss limit %", daily_profit_cap_pct: "Daily profit cap %",
   windows: "Markets", assets: "Coins", require_cross: "Only after crossing the line", limit_offset_ticks: "May pay … ticks more",
   custom_name: "Strategy", custom_id: "Strategy Builder id",
+  take_profit_cents: "Take profit (+¢/share after fees)", stop_loss_cents: "Stop-loss (−¢/share after fees)",
+  max_trades_per_market: "Max trades per market (0 = unlimited)", reentry_cooldown_secs: "Wait before buying again (s)",
 };

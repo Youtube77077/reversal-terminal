@@ -144,7 +144,7 @@ function Editor({ edit, setEdit, labels, onTest, onSave, onSaveNew, onBack, test
 
       <H t="What to buy" />
       <div className="flex flex-wrap gap-2">
-        {[["favourite", "Favourite (likely winner)"], ["underdog", "Underdog (cheap side)"], ["up", "Always UP"], ["down", "Always DOWN"]].map(([v, l]) => (
+        {[["favourite", "Favourite (likely winner)"], ["underdog", "Underdog (cheap side)"], ["predicted", "Predicted (fast prices say it's worth more)"], ["up", "Always UP"], ["down", "Always DOWN"]].map(([v, l]) => (
           <button key={v} onClick={() => set("side", v)} className={clsx("rounded-full px-4 py-2 text-[13px] font-bold", p.side === v ? "bg-ink text-bg" : "bg-panel2 text-dim")}>{l}</button>))}
       </div>
       <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -177,6 +177,12 @@ function Editor({ edit, setEdit, labels, onTest, onSave, onSaveNew, onBack, test
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         {num("take_profit_price", "1", true, EX.take_profit_price)}{num("stop_price", "1", true, EX.stop_price)}{num("z_stop", "0.5", false, EX.z_stop)}
         {num("limit_offset_ticks", "1", false, EX.limit_offset_ticks)}
+      </div>
+      <H t="Quick trades (scalping)" />
+      <p className="mb-2 text-[12px] text-dim">Sell as soon as a trade is up a few cents, then buy again in the same market. Leave at 0 / 1 to hold each trade to the end.</p>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {num("take_profit_cents", "0.5", false, EX.take_profit_cents)}{num("stop_loss_cents", "0.5", false, EX.stop_loss_cents)}
+        {num("max_trades_per_market", "1", false, EX.max_trades_per_market)}{num("reentry_cooldown_secs", "1", false, EX.reentry_cooldown_secs)}
       </div>
       <div className="mt-4 flex flex-wrap gap-2">
         <button onClick={onTest} disabled={testing} className="flex items-center gap-2 rounded-full bg-ink px-5 py-3 text-[15px] font-bold text-bg"><FlaskConical size={16} />{testing ? "Testing…" : "Test with $100 on all recorded data"}</button>
@@ -212,6 +218,12 @@ const EX: Record<string, string> = {
   max_losses_per_day: "Stop for the rest of the day after this many losing trades.",
   daily_loss_limit_pct: "Stop for the rest of the day once you're down this % from the day's starting balance.",
   daily_profit_cap_pct: "Stop for the rest of the day once you're up this %. 0 = off. (It never makes the bot bet more.)",
+  take_profit_cents: "Sell as soon as each share is up this many cents AFTER paying the buy fee and the sell fee. "
+    + "Example: bought at 60¢, set 4 → sells when someone pays about 67¢ (fees ~3¢). 0 = off.",
+  stop_loss_cents: "Sell to cut the loss once each share is down this many cents after fees. Example: bought at 60¢, set 6 → sells around 51¢. 0 = off.",
+  max_trades_per_market: "After selling, the bot may buy again in the same market, up to this many times. 0 = unlimited. "
+    + "It only holds one trade per market at a time.",
+  reentry_cooldown_secs: "After selling, wait this many seconds before buying again in that market (avoids buying straight back into a spike).",
 };
 
 function H({ t }: { t: string }) { return <div className="mb-2 mt-5 text-[13px] font-bold uppercase tracking-wide text-faint">{t}</div>; }

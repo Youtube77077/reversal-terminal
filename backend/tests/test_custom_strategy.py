@@ -46,3 +46,23 @@ def test_custom_favourite_buys_and_filters():
     assert evaluate_custom(_st(60, 100.01, tw=100.01), p)[0] is None      # too close to flipping (z < 4)
     assert evaluate_custom(_st(20, 100.5, tw=100.5), p)[0] is None        # outside the time window
     assert evaluate_custom(_st(60, 100.5, up_ask=0.90, tw=100.5), p)[0] is None   # price outside range
+
+
+
+def test_predicted_side_buys_what_fast_prices_favour():
+    from app.strategies.custom import predicted_side
+    st = _st(120, 100.0, up_ask=0.50)
+    st.features["fast_spot"] = 100.4             # exchanges already moved up, Polymarket still 50/50
+    assert predicted_side(st, {"use_fast": True}) == "UP"
+    st.features["fast_spot"] = 99.6
+    assert predicted_side(st, {"use_fast": True}) == "DOWN"
+
+
+def test_scalp_exit_counts_both_fees():
+    from app.strategies.custom import scalp_exit
+    fee = FeeSchedule()
+    p = {"take_profit_cents": 4, "stop_loss_cents": 6}
+    assert scalp_exit(p, 0.60, 0.64, fee) is None          # +4c gross is eaten by ~3.4c of fees
+    assert scalp_exit(p, 0.60, 0.68, fee) == "take profit"
+    assert scalp_exit(p, 0.60, 0.52, fee) == "stop"
+    assert scalp_exit({}, 0.60, 0.99, fee) is None         # off by default

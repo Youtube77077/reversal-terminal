@@ -246,10 +246,22 @@ class TradingEngine:
             today = s.scalars(select(Transaction).where(Transaction.account_id == account_id, Transaction.source == "live",
                                                         Transaction.created_ts >= day0)).all()
             open_n = sum(1 for t in today if t.status in ("pending", "filled", "partially_filled"))
+            here = s.scalars(select(Transaction).where(Transaction.account_id == account_id, Transaction.source == "live",
+                                                       Transaction.market_id == st.market_id,
+                                                       Transaction.status.notin_(("cancelled", "expired")))).all()
             settled = [t for t in today if t.status in ("won", "lost")]
             losses = sum(1 for t in settled if (t.net_profit or 0) < 0)
             day_pnl = sum((t.net_profit or 0) for t in settled)
             start_bal = max(equity - day_pnl, 1e-9)
+        per_mkt = int(p.get("max_trades_per_market", 1) or 0)
+        if per_mkt > 0 and len(here) >= per_mkt:
+            return "max trades in this market reached"
+        if any(t.status in ("pending", "filled", "partially_filled") for t in here):
+            return "holding a position in this market: waiting to sell"
+        last_out = max((t.settled_ts or 0 for t in here), default=0)
+        cool = float(p.get("reentry_cooldown_secs") or 0)
+        if last_out and now_ms() - last_out < cool * 1000:
+            return f"waiting {cool:g}s before buying again in this market"
         if int(p.get("max_open_positions") or 0) and open_n >= int(p["max_open_positions"]):
             return "max open trades reached"
         if int(p.get("max_trades_per_day") or 0) and len(today) >= int(p["max_trades_per_day"]):
@@ -276,7 +288,7 @@ class TradingEngine:
             why = await asyncio.to_thread(self._custom_prepare, account_id, d, st)
             if why:
                 self._note_why(account_id, why)
-                if "per day" in why or "today" in why or "too small" in why:
+                if "per day" in why or "today" in why or "too small" in why or "in this market reached" in why:
                     self._done.add((account_id, st.market_id))
                 return
             opened = await asyncio.to_thread(self._open_order, account_id, st, d, exp_id)
@@ -317,7 +329,12 @@ class TradingEngine:
             edge = None
             if "hist_win_prob" in d.expected:
                 edge = d.expected["hist_win_prob"] - d.expected["breakeven_prob"]
-            rd = risk.check(s, acct, st.market_id, cost, liq, st.spread(d.side), edge, hist_n, equity)
+            per_mkt = None
+            if acct.strategy_key == "X":
+                from ..strategies.custom import merged as _cm
+                n_ = int(_cm(json.loads(acct.params_json or "{}")).get("max_trades_per_market", 1) or 0)
+                per_mkt = 10 ** 9 if n_ <= 0 else n_
+            rd = risk.check(s, acct, st.market_id, cost, liq, st.spread(d.side), edge, hist_n, equity, per_mkt)
             if not rd.ok and rd.reason:
                 if rd.reason.startswith("already"):
                     self._done.add((acct.id, st.market_id))   # trade limit reached: stop re-evaluating
@@ -668,10 +685,14 @@ class TradingEngine:
         for a in accounts:
             p = {**default_params(a["strategy_key"]), **json.loads(a["params_json"] or "{}")}
             tp = float(p.get("take_profit_price") or 0)
-            sp = float(p.get("stop_price") or 0) if a["strategy_key"] == "X" else 0.0
-            if 0 < tp < 1 or 0 < sp < 1:
+            is_x = a["strategy_key"] == "X"
+            sp = float(p.get("stop_price") or 0) if is_x else 0.0
+            tpc = float(p.get("take_profit_cents") or 0) if is_x else 0.0
+            slc = float(p.get("stop_loss_cents") or 0) if is_x else 0.0
+            if 0 < tp < 1 or 0 < sp < 1 or tpc > 0 or slc > 0:
                 wanted[a["id"]] = {"tp": tp if 0 < tp < 1 else None, "stop": sp if 0 < sp < 1 else None,
-                                   "z_stop": float(p.get("z_stop") or 0), "use_fast": bool(p.get("use_fast", True))}
+                                   "z_stop": float(p.get("z_stop") or 0), "use_fast": bool(p.get("use_fast", True)),
+                                   "rel": {"take_profit_cents": tpc, "stop_loss_cents": slc} if (tpc > 0 or slc > 0) else None}
         if not wanted:
             return
         todo = await asyncio.to_thread(self._exit_candidates, wanted, states)
@@ -718,8 +739,16 @@ class TradingEngine:
                 if not bids:
                     continue
                 price = None
+                rel = None
+                if w.get("rel") and tx.entry_price:
+                    from ..strategies.custom import scalp_exit
+                    rel = scalp_exit(w["rel"], tx.entry_price, bids[0][0], st.fee)
                 if w["tp"] and bids[0][0] >= w["tp"] - 1e-9:
                     price = w["tp"]                                   # take profit
+                elif rel == "take profit":
+                    price = bids[0][0]                                # +X cents after fees: sell at the best bid
+                elif rel == "stop":
+                    price = max(0.01, round(bids[0][0] - 0.03, 2))    # -X cents: accept up to 3c below best bid
                 elif w["stop"] and bids[0][0] <= w["stop"] + 1e-9:
                     from ..strategies.custom import safety_z
                     z = safety_z(st, tx.outcome, w["use_fast"])
@@ -906,6 +935,10 @@ WHY_LABELS = [
     ("waiting", "Waiting: no market is in your time window right now"),
     ("outside entry window", "Waiting: no market is in your time window right now"),
     ("signal found", "Signal found: order sent"),
+    ("holding a position", "Holding a trade in this market: waiting to sell"),
+    ("before buying again", "Just sold: short wait before buying again"),
+    ("in this market reached", "Max trades in this market reached"),
+    ("no prediction yet", "No prediction yet (price data warming up)"),
     ("too small", "Stake too small for Polymarket's 5-share minimum"),
     ("safety margin z none", "Safety margin unknown (price feed not ready)"),
     ("news blackout", "News blackout (weekdays 14:25-14:45)"),

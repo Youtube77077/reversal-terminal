@@ -45,8 +45,11 @@ def _utc_day_start_ms() -> int:
 
 
 def check(s: Session, acct: Account, market_id: int, cost: float, liquidity: float | None, spread: float | None,
-          expected_edge: float | None, sample_size: int | None, equity: float) -> RiskDecision:
+          expected_edge: float | None, sample_size: int | None, equity: float,
+          per_market_limit: int | None = None) -> RiskDecision:
     r = merged_risk(acct)
+    if per_market_limit is not None:
+        r = {**r, "max_trades_per_market": per_market_limit}
     if acct.paused:
         return RiskDecision(False, "account paused")
     if acct.halted_reason:
