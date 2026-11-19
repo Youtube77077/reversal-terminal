@@ -12,6 +12,10 @@ from ..models import CustomStrategy
 from ..strategies.custom import DEFAULTS, merged
 
 PRESETS = [
+    {"name": "Late favourite 92–97¢, 60–90s, z4 (best tested)", "params": {**DEFAULTS, "side": "favourite", "min_price": 0.92,
+                                                                       "max_price": 0.97, "entry_min_secs": 60, "entry_max_secs": 90,
+                                                                       "z_min": 4.0, "momentum_filter": False, "stake_value": 5.0,
+                                                                       "max_loss_pct": 5.0, "max_losses_per_day": 2}},
     {"name": "Late favourite 95–97¢ (safest tested)", "params": {**DEFAULTS, "side": "favourite", "min_price": 0.95, "max_price": 0.97,
                                                              "entry_min_secs": 40, "entry_max_secs": 75, "z_min": 4.0}},
     {"name": "Late favourite 90–97¢ (more trades)", "params": {**DEFAULTS, "side": "favourite", "min_price": 0.90, "max_price": 0.97,
@@ -49,11 +53,12 @@ def _row(r: CustomStrategy) -> dict:
 
 
 def seed() -> None:
+    """Add any built-in preset that has never been added before (deleted ones stay deleted)."""
     with session_scope() as s:
-        if s.scalar(select(CustomStrategy).limit(1)):
-            return
+        known = set(s.scalars(select(CustomStrategy.name)).all())
         for pr in PRESETS:
-            s.add(CustomStrategy(name=pr["name"], params_json=json.dumps(_clean(pr["params"])), created_ts=now_ms(), updated_ts=now_ms()))
+            if pr["name"] not in known:
+                s.add(CustomStrategy(name=pr["name"], params_json=json.dumps(_clean(pr["params"])), created_ts=now_ms(), updated_ts=now_ms()))
 
 
 def list_all() -> list[dict]:
