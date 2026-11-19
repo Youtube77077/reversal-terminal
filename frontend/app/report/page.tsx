@@ -16,6 +16,7 @@ export default function ReportPage() {
   const [mode, setMode] = useState<"paper" | "live">("paper");
   const acct = mode === "live" ? wallet?.live : wallet?.paper;
   const { data: r } = usePoll<any>(acct ? `/api/accounts/${acct.id}/report` : null, 15000);
+  const { data: perf } = usePoll<any>(acct ? `/api/accounts/${acct.id}/performance` : null, 30000);
   const s = r?.summary;
   return (
     <div className="page max-w-[1100px] space-y-3">
@@ -26,6 +27,7 @@ export default function ReportPage() {
             {m === "paper" ? "Practice bot" : "Real-money bot"}</button>
         ))}
       </div>
+      {acct && perf?.points?.length > 1 && <Perf perf={perf} />}
       {!acct ? <Box>This wallet has no {mode === "live" ? "real-money" : "practice"} bot yet.</Box> : !r ? <Box>Loading…</Box> : !r.trades ? (
         <Box>No finished trades yet for {wallet?.name}. {r.open_trades ? `${r.open_trades} trade(s) still open.` : ""} Signals it skipped will show here as markets finish.</Box>
       ) : (
@@ -155,4 +157,54 @@ function Table({ title, head, rows, help, inner }: { title: string; head: string
     </>
   );
   return inner ? body : <section className="panel p-5">{body}</section>;
+}
+
+
+/** Balance over time (includes deposits) + cumulative return % (deposits excluded). */
+function Perf({ perf }: { perf: any }) {
+  const pts = perf.points as { ts: number; equity: number; pct: number | null; profit: number; contributed: number }[];
+  const last = pts[pts.length - 1];
+  return (
+    <section className="panel p-5">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <Tile k="Balance now" v={`$${last.equity.toFixed(2)}`} />
+        <Tile k="Money you put in" v={`$${last.contributed.toFixed(2)}`} sub="start + deposits − withdrawals" />
+        <Tile k="Profit (deposits excluded)" v={money(last.profit)} tone={last.profit >= 0 ? "up" : "down"} big />
+        <Tile k="Cumulative return" v={last.pct == null ? "—" : `${last.pct >= 0 ? "+" : ""}${last.pct.toFixed(1)}%`} tone={(last.pct ?? 0) >= 0 ? "up" : "down"} />
+      </div>
+      <Line title="Balance over time" sub="Includes money you added — the blue dots are deposits." pts={pts.map((x) => ({ ts: x.ts, v: x.equity }))}
+        marks={perf.deposits} fmt={(v) => `$${v.toFixed(0)}`} />
+      <Line title="Cumulative return %" sub="Profit divided by the money you put in. Deposits do NOT count as gains." zero
+        pts={pts.filter((x) => x.pct != null).map((x) => ({ ts: x.ts, v: x.pct as number }))} fmt={(v) => `${v.toFixed(1)}%`} />
+    </section>
+  );
+}
+
+function Line({ title, sub, pts, fmt, zero, marks }: { title: string; sub: string; pts: { ts: number; v: number }[];
+  fmt: (v: number) => string; zero?: boolean; marks?: { ts: number; amount: number }[] }) {
+  if (pts.length < 2) return null;
+  const W = 600, H = 140;
+  const vals = pts.map((p) => p.v).concat(zero ? [0] : []);
+  const lo = Math.min(...vals), hi = Math.max(...vals), span = hi - lo || 1;
+  const t0 = pts[0].ts, t1 = pts[pts.length - 1].ts, tspan = t1 - t0 || 1;
+  const x = (ts: number) => ((ts - t0) / tspan) * W, y = (v: number) => H - ((v - lo) / span) * H;
+  const d = pts.map((p, i) => `${i ? "L" : "M"}${x(p.ts).toFixed(1)},${y(p.v).toFixed(1)}`).join(" ");
+  const up = pts[pts.length - 1].v >= (zero ? 0 : pts[0].v);
+  const tl = (ts: number) => new Date(ts).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return (
+    <div className="mt-5">
+      <div className="flex items-baseline justify-between"><div className="text-[14px] font-bold">{title}</div>
+        <div className={clsx("num text-[14px] font-bold", up ? "text-up" : "text-down")}>{fmt(pts[pts.length - 1].v)}</div></div>
+      <div className="text-[11.5px] text-faint">{sub}</div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="mt-2 h-36 w-full" preserveAspectRatio="none">
+        {zero && <line x1="0" x2={W} y1={y(0)} y2={y(0)} stroke="currentColor" className="text-line" strokeDasharray="4 4" />}
+        <path d={d} fill="none" strokeWidth="2.5" stroke="currentColor" className={up ? "text-up" : "text-down"} vectorEffect="non-scaling-stroke" />
+        {(marks || []).filter((m) => m.ts >= t0 && m.ts <= t1).map((m, i) => {
+          const near = pts.reduce((a, b) => (Math.abs(b.ts - m.ts) < Math.abs(a.ts - m.ts) ? b : a));
+          return <circle key={i} cx={x(m.ts)} cy={y(near.v)} r="5" className="fill-info" vectorEffect="non-scaling-stroke" />;
+        })}
+      </svg>
+      <div className="mt-1 flex justify-between text-[10px] text-faint"><span>{tl(t0)}</span><span>{fmt(lo)} – {fmt(hi)}</span><span>{tl(t1)}</span></div>
+    </div>
+  );
 }

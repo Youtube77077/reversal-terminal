@@ -167,6 +167,41 @@ def ledger(aid: int, limit: int = 500):
         return [{c.name: getattr(r, c.name) for c in AccountLedger.__table__.columns} for r in rows]
 
 
+@router.get("/accounts/{aid}/performance")
+def performance(aid: int, points: int = 400):
+    """Balance over time + cumulative return % that IGNORES deposits/withdrawals/resets.
+
+    contributed = money the user put in (initial + deposits - withdrawals + reset adjustments)
+    profit      = equity - contributed;   return % = profit / contributed
+    """
+    with session_scope() as s:
+        led = s.execute(select(AccountLedger.ts, AccountLedger.kind, AccountLedger.amount)
+                        .where(AccountLedger.account_id == aid).order_by(AccountLedger.ts)).all()
+        snaps = s.execute(select(AccountBalanceSnapshot.ts, AccountBalanceSnapshot.equity)
+                          .where(AccountBalanceSnapshot.account_id == aid).order_by(AccountBalanceSnapshot.ts)).all()
+        acct = s.get(Account, aid)
+        start = float(acct.initial_balance or 0.0) if acct else 0.0
+    contrib_events = [(ts, amt) for ts, kind, amt in led if kind in ("initial", "deposit", "withdrawal", "reset")]
+    has_initial = any(k == "initial" for _, k, _ in led)
+    # wallet accounts record their money as deposits/resets (initial_balance mirrors the last reset),
+    # so only fall back to initial_balance when there are no contribution events at all
+    out, i, contributed = [], 0, (0.0 if (has_initial or contrib_events) else start)
+    deposits = []
+    for ts, eq in snaps:
+        while i < len(contrib_events) and contrib_events[i][0] <= ts:
+            contributed += contrib_events[i][1]
+            if contrib_events[i][1] > 0 and contrib_events[i][0] > (snaps[0][0] if snaps else 0):
+                deposits.append({"ts": contrib_events[i][0], "amount": contrib_events[i][1]})
+            i += 1
+        profit = eq - contributed
+        out.append({"ts": ts, "equity": round(eq, 4), "contributed": round(contributed, 4), "profit": round(profit, 4),
+                    "pct": round(profit / contributed * 100, 3) if contributed > 0 else None})
+    if len(out) > points:
+        step = len(out) / points
+        out = [out[int(k * step)] for k in range(points)] + [out[-1]]
+    return {"points": out, "deposits": deposits}
+
+
 @router.get("/accounts/{aid}/balance-history")
 def balance_history(aid: int):
     with session_scope() as s:
