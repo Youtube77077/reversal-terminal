@@ -106,7 +106,6 @@ def flip_probability(st: MarketState, side: str, use_fast: bool = False) -> floa
     from the current price with the recently observed 1-second volatility.
     """
     import math
-    from scipy.stats import norm
     f = st.features
     spot, op, vol = f.get("spot"), st.open_price, f.get("vol_30s")
     if use_fast and f.get("fast_spot"):
@@ -128,7 +127,8 @@ def flip_probability(st: MarketState, side: str, use_fast: bool = False) -> floa
     if sd <= 0:
         return 1.0 if ((mean >= 0) == (side == "UP")) else 0.0
     z = mean / sd if side == "UP" else -mean / sd
-    return float(min(0.9999, max(0.0001, norm.cdf(z))))
+    # standard normal CDF; identical to scipy's norm.cdf (ndtr) but ~100x faster per call
+    return float(min(0.9999, max(0.0001, 0.5 * math.erfc(-z / math.sqrt(2.0)))))
 
 
 def default_params(key: str) -> dict:

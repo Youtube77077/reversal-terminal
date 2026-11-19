@@ -132,13 +132,48 @@ def _f(x):
     return None if x != x else float(x)
 
 
+def _lv(a: dict, key: str, i: int) -> list:
+    """Parsed ask levels for row i, parsed once and kept (data is immutable once a market is resolved)."""
+    c = a.get(key + "_p")
+    if c is None:
+        c = a[key + "_p"] = [None] * len(a["ts"])
+    v = c[i]
+    if v is None:
+        v = c[i] = _levels(a[key][i])
+    return v
+
+
+def _edge_upper_bound(a: dict, ptb: float, use_fast: bool, predicted: bool, ask: np.ndarray) -> np.ndarray:
+    """Vectorised flip_probability for a whole market -> an UPPER BOUND of the model edge each second
+    (no fee, price = current ask; the real check uses the limit price + fee, which is never better).
+    Rows that cannot reach min_model_edge are skipped without changing any result."""
+    spot = a["spot"]
+    if use_fast:
+        fast = a["fast"]
+        spot = np.where(np.isfinite(fast) & (fast != 0), fast, spot)
+    t, vol, tw = a["secs"], a["vol"], a["tw"]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        sigma = np.maximum(vol, 0.05) * 1e-4 * spot
+        known = np.where(np.isfinite(tw) & (tw != 0), tw, spot)
+        w = t / 60.0
+        mean = np.where(t < 60, (1 - w) * (known - ptb) + w * (spot - ptb), spot - ptb)
+        sd = np.where(t < 60, w * sigma * np.sqrt(np.maximum(t, 0) / 3.0), sigma * np.sqrt(np.maximum(t - 60, 0) + 20.0))
+        from scipy.special import ndtr
+        pu = np.clip(ndtr(mean / sd), 0.0001, 0.9999)
+        pu = np.where((sd > 0) & (t > 0) & np.isfinite(spot) & (spot != 0) & np.isfinite(vol), pu, np.nan)
+        if predicted:
+            return np.fmax(pu - a["up_ask"], (1 - pu) - a["down_ask"])
+        pw = np.where(ask == a["up_ask"], pu, 1 - pu)
+        return pw - ask
+
+
 def _state(m, a: dict, i: int, ptb) -> MarketState:
     ub, ua_, db, da_ = _f(a["up_bid"][i]), _f(a["up_ask"][i]), _f(a["down_bid"][i]), _f(a["down_ask"][i])
     st = MarketState(market_id=int(m.Index), asset=m.asset, slug=m.slug, condition_id=None, up_token="u", down_token="d",
                      open_ts=int(m.open_ts), close_ts=int(m.close_ts), server_ts=int(a["ts"][i]),
                      secs_remaining=float(a["secs"][i]), open_price=ptb, fee=FEE, min_order_size=5.0, tick_size=0.01,
                      up_bid=ub, up_ask=ua_, down_bid=db, down_ask=da_,
-                     up_asks=_levels(a["ua"][i]), down_asks=_levels(a["da"][i]), book_ok=True, spot_ok=True, window=m.window,
+                     up_asks=_lv(a, "ua", i), down_asks=_lv(a, "da", i), book_ok=True, spot_ok=True, window=m.window,
                      features={"spot": float(a["spot"][i]), "fast_spot": _f(a["fast"][i]), "twap_window": _f(a["tw"][i]),
                                "vol_30s": _f(a["vol"][i]), "mom_10s": _f(a["mom"][i]), "ptb_exact": True})
     if ub is not None:
@@ -202,6 +237,8 @@ def run(params: dict, start_balance: float = 100.0, days: float | None = None, p
     per_mkt = int(p.get("max_trades_per_market", 1) or 0)
     per_mkt = 10 ** 9 if per_mkt <= 0 else per_mkt
     cool_ms = float(p.get("reentry_cooldown_secs") or 0) * 1000
+    min_edge = float(p.get("min_model_edge", -1))
+    use_fast = bool(p.get("use_fast"))
     decisions, reasons = [], {}
     total = int(len(sel))
     if progress:
@@ -225,7 +262,12 @@ def run(params: dict, start_balance: float = 100.0, days: float | None = None, p
             ask = a["down_ask"]
         secs = a["secs"]
         with np.errstate(invalid="ignore"):
-            idx = np.flatnonzero((secs >= t_lo) & (secs <= t_hi) & (ask >= lo_p - 1e-9) & (ask <= hi_p + 1e-9))
+            ok = (secs >= t_lo) & (secs <= t_hi) & (ask >= lo_p - 1e-9) & (ask <= hi_p + 1e-9)
+            if min_edge > -1 and ok.any():
+                n0 = int(ok.sum())
+                ok &= _edge_upper_bound(a, float(ptb), use_fast, side_mode == "predicted", ask) >= min_edge - 1e-6
+                reasons["model"] = reasons.get("model", 0) + n0 - int(ok.sum())
+            idx = np.flatnonzero(ok)
         ts = a["ts"]; n = len(ts)
         n_here, free_ts = 0, -1
         for i in idx:
@@ -242,7 +284,7 @@ def run(params: dict, start_balance: float = 100.0, days: float | None = None, p
                 j += 1
             if j >= n:
                 break
-            lv = _levels(a["ua"][j] if dcs.side == "UP" else a["da"][j])
+            lv = _lv(a, "ua" if dcs.side == "UP" else "da", j)
             entry_px = next((px for px, _q in lv if px <= dcs.limit_price + 1e-9), dcs.limit_price)
             ex = _find_exit(p, a, dcs.side, j + 1, entry_px, m, ptb)
             decisions.append({"mid": mid, "asset": m.asset, "window": m.window, "ts": int(ts[i]),
