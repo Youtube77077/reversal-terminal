@@ -52,6 +52,7 @@ def reset(paper: bool, live: bool, research: bool, starting_balance: float = 20.
             run("signals", f"DELETE FROM signals WHERE account_id IN {a}")
             run("ledger", f"DELETE FROM account_ledger WHERE account_id IN {a}")
             run("balance_snapshots", f"DELETE FROM account_balances WHERE account_id IN {a}")
+            run("skipped_signals", f"DELETE FROM strategy_candidates WHERE account_id IN {a}")
             for acct in s.query(Account).filter(Account.id.in_(ids)).all():
                 bal = starting_balance if mode == "paper" else 0.0
                 acct.cash, acct.reserved, acct.initial_balance, acct.peak_equity = bal, 0.0, bal, bal

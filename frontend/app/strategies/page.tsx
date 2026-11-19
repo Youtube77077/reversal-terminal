@@ -38,10 +38,18 @@ function Builder() {
     try { const d = await post("/api/custom-strategies/decode", { code: c }); setEdit({ name: d.name, params: d.params }); setRes(null); flash("Strategy loaded — test it, then Save."); }
     catch (e: any) { setErr(e.message); }
   }
+  const [prog, setProg] = useState<{ current: number; total: number; stage: string } | null>(null);
   async function test(params: P) {
-    setTesting(true); setErr(null); setRes(null);
-    try { setRes(await post("/api/custom-strategies/test", { params, start_balance: 100 })); }
-    catch (e: any) { setErr(e.message); } finally { setTesting(false); }
+    setTesting(true); setErr(null); setRes(null); setProg(null);
+    try {
+      const { job } = await post("/api/custom-strategies/test-start", { params, start_balance: 100 });
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 400));
+        const j = await api(`/api/custom-strategies/test-job/${job}`);
+        setProg({ current: j.current, total: j.total, stage: j.stage });
+        if (j.done) { if (j.error) throw new Error(j.error); setRes(j.result); break; }
+      }
+    } catch (e: any) { setErr(e.message); } finally { setTesting(false); }
   }
   async function save(asNew = false) {
     if (!edit) return;
@@ -94,7 +102,7 @@ function Builder() {
 
       {edit && fields && <Editor edit={edit} setEdit={setEdit} labels={fields.labels} onTest={() => test(edit.params)} testing={testing}
         onSave={() => save(false)} onSaveNew={() => save(true)} onBack={() => { setEdit(null); setRes(null); }} />}
-      {testing && <div className="panel p-6 text-center text-[14px] text-dim">Testing on every recorded market… (a few seconds)</div>}
+      {testing && <Progress p={prog} />}
       {res && <Results r={res} />}
       <NameSheet open={!!renaming} title="Rename strategy" cta="Save name" initial={renaming?.name ?? ""} onClose={() => setRenaming(null)}
         onSave={async (name) => { await api(`/api/custom-strategies/${renaming.id}`, { method: "PATCH", body: JSON.stringify({ name }) }); reload(); }} />
@@ -111,12 +119,12 @@ function Editor({ edit, setEdit, labels, onTest, onSave, onSaveNew, onBack, test
       <input inputMode="decimal" step={step} value={pct ? Math.round((p[k] ?? 0) * 1000) / 10 : p[k] ?? 0}
         onChange={(e) => { const v = Number(e.target.value.replace(",", ".")); set(k, Number.isFinite(v) ? (pct ? v / 100 : v) : 0); }}
         className="num w-full bg-transparent text-[17px] font-bold outline-none" />
-      {hint && <span className="block text-[10.5px] text-faint">{hint}</span>}
+      {hint && <span className="mt-1 block text-[11.5px] leading-snug text-dim">{hint}</span>}
     </label>
   );
   const tog = (k: string, hint?: string) => (
     <button onClick={() => set(k, !p[k])} className={clsx("rounded-2xl px-3 py-2 text-left", p[k] ? "bg-cash/20" : "bg-panel2/60")}>
-      <span className="block text-[13px] font-bold">{p[k] ? "✓ " : ""}{labels[k]}</span>{hint && <span className="block text-[10.5px] text-faint">{hint}</span>}
+      <span className="block text-[13px] font-bold">{p[k] ? "✓ " : ""}{labels[k]}</span>{hint && <span className="mt-1 block text-[11.5px] leading-snug text-dim">{hint}</span>}
     </button>
   );
   const chips = (k: string, opts: [string, string][]) => (
@@ -148,10 +156,10 @@ function Editor({ edit, setEdit, labels, onTest, onSave, onSaveNew, onBack, test
       <div className="mt-2">{chips("assets", COINS.map((c) => [c, c]))}<span className="ml-1 text-[11px] text-faint">(none selected = all coins)</span></div>
       <H t="Filters (when to skip)" />
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        {num("z_min", "0.5", false, "how far from flipping, 0 = off. 4 tested best")}{num("z_max", "0.5", false, "0 = off")}
-        {num("min_model_edge", "0.01", false, "-1 = off")}{num("model_max", "0.05", false, "1 = off")}
-        {tog("momentum_filter", "skip when moving fast toward losing")}{num("momentum_mult", "0.5")}
-        {tog("blackout", "US data releases")}{tog("use_fast", "Binance/Coinbase/OKX, ~2s ahead")}
+        {num("z_min", "0.5", false, EX.z_min)}{num("z_max", "0.5", false, EX.z_max)}
+        {num("min_model_edge", "0.01", false, EX.min_model_edge)}{num("model_max", "0.05", false, EX.model_max)}
+        {tog("momentum_filter", EX.momentum_filter)}{num("momentum_mult", "0.5", false, EX.momentum_mult)}
+        {tog("blackout", EX.blackout)}{tog("use_fast", EX.use_fast)}
       </div>
       <H t="Money & loss protection" />
       <div className="mb-2 flex gap-2">
@@ -161,14 +169,14 @@ function Editor({ edit, setEdit, labels, onTest, onSave, onSaveNew, onBack, test
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         {num("stake_value", "0.5", false, p.stake_mode === "fixed" ? "$ per trade" : "% of balance per trade")}
         {num("max_loss_pct", "0.5", false, "one loss can never cost more than this % of your balance")}
-        {num("min_order_usd", "1")}{num("max_order_usd", "1")}
-        {num("max_open_positions", "1")}{num("max_trades_per_day", "1")}
-        {num("max_losses_per_day", "1")}{num("daily_loss_limit_pct", "1")}{num("daily_profit_cap_pct", "1")}
+        {num("min_order_usd", "1", false, EX.min_order_usd)}{num("max_order_usd", "1", false, EX.max_order_usd)}
+        {num("max_open_positions", "1", false, EX.max_open_positions)}{num("max_trades_per_day", "1", false, EX.max_trades_per_day)}
+        {num("max_losses_per_day", "1", false, EX.max_losses_per_day)}{num("daily_loss_limit_pct", "1", false, EX.daily_loss_limit_pct)}{num("daily_profit_cap_pct", "1", false, EX.daily_profit_cap_pct)}
       </div>
       <H t="Selling early" />
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        {num("take_profit_price", "1", true, "0 = hold to the end")}{num("stop_price", "1", true, "0 = off")}{num("z_stop", "0.5", false, "only sell if really at risk")}
-        {num("limit_offset_ticks", "1", false, "pay up to this many cents more to get filled")}
+        {num("take_profit_price", "1", true, EX.take_profit_price)}{num("stop_price", "1", true, EX.stop_price)}{num("z_stop", "0.5", false, EX.z_stop)}
+        {num("limit_offset_ticks", "1", false, EX.limit_offset_ticks)}
       </div>
       <div className="mt-4 flex flex-wrap gap-2">
         <button onClick={onTest} disabled={testing} className="flex items-center gap-2 rounded-full bg-ink px-5 py-3 text-[15px] font-bold text-bg"><FlaskConical size={16} />{testing ? "Testing…" : "Test with $100 on all recorded data"}</button>
@@ -178,6 +186,33 @@ function Editor({ edit, setEdit, labels, onTest, onSave, onSaveNew, onBack, test
     </section>
   );
 }
+
+/** Plain-English explanations shown under each setting. */
+const EX: Record<string, string> = {
+  z_min: "How far your side is from losing, compared with how much the coin normally moves in the time left. "
+    + "1 = a normal move could flip it (risky). 4 = it would need 4× a normal move (very rare). Higher = safer, fewer trades. 0 = off. Tested best: 4.",
+  z_max: "Skip trades that are TOO safe (far ahead). Mostly useful for underdog strategies. 0 = off.",
+  min_model_edge: "The bot estimates the real chance your side wins. Edge = that chance minus the price you pay (incl. fee). "
+    + "Example: real chance 97%, price 95¢ → edge 0.02. Only buy if the edge is at least this. -1 = off.",
+  model_max: "Skip if the bot's own estimate is ABOVE this. When the estimate is far higher than Polymarket's price, "
+    + "our data is usually wrong, not the market. 1 = off.",
+  momentum_filter: "Skip the trade if, in the last 10 seconds, the price moved fast in the direction that makes your side LOSE "
+    + "(e.g. you'd buy UP but the coin is dropping fast toward the price to beat).",
+  momentum_mult: "How fast counts as 'fast': 2 = more than twice the coin's normal 10-second move.",
+  blackout: "Don't trade on weekdays 14:25–14:45 (Amsterdam). US economic news comes out then and makes prices jump.",
+  use_fast: "Use Binance, Coinbase and OKX prices (about 2 seconds ahead of the price feed that decides the winner).",
+  take_profit_price: "Sell early once the share's price reaches this (e.g. 99¢), instead of waiting for $1. 0 = hold to the end.",
+  stop_price: "Sell early to limit a loss if the share's price falls to this (e.g. 80¢). 0 = off.",
+  z_stop: "Only stop-loss if the safety margin has also dropped below this — so a short dip doesn't make it sell a winner.",
+  limit_offset_ticks: "Allow paying this many cents above the current price to make sure the order fills (never above your highest price).",
+  min_order_usd: "Never place an order smaller than this. (Polymarket also needs at least 5 shares.)",
+  max_order_usd: "Never put more than this into one trade, however big your balance gets.",
+  max_open_positions: "Most trades open at the same time. Coins often move together, so this limits how much one bad moment can cost.",
+  max_trades_per_day: "Stop after this many trades in a day. 0 = no limit.",
+  max_losses_per_day: "Stop for the rest of the day after this many losing trades.",
+  daily_loss_limit_pct: "Stop for the rest of the day once you're down this % from the day's starting balance.",
+  daily_profit_cap_pct: "Stop for the rest of the day once you're up this %. 0 = off. (It never makes the bot bet more.)",
+};
 
 function H({ t }: { t: string }) { return <div className="mb-2 mt-5 text-[13px] font-bold uppercase tracking-wide text-faint">{t}</div>; }
 
@@ -277,6 +312,23 @@ function DataStatus({ ds }: { ds: any }) {
       <span className="text-dim">{hours} hours recorded</span>
       <span className="text-dim">newest market ended {ago(ds.newest_ts)}</span>
       <span className="text-dim">updated {ago(ds.updated_ts)} · refreshes every {ds.refresh_minutes} min</span>
+    </div>
+  );
+}
+
+
+function Progress({ p }: { p: { current: number; total: number; stage: string } | null }) {
+  const pct = p && p.total ? Math.min(100, (p.current / p.total) * 100) : 0;
+  return (
+    <div className="panel p-5">
+      <div className="flex items-baseline justify-between text-[14px]">
+        <span className="font-bold">{!p || p.stage === "loading data" ? "Loading recorded markets…" : "Testing every recorded market"}</span>
+        <span className="num font-bold">{p && p.stage !== "loading data" ? `${p.current.toLocaleString()} / ${p.total.toLocaleString()}` : ""}</span>
+      </div>
+      <div className="mt-3 h-3 overflow-hidden rounded-full bg-panel2">
+        <div className="h-full rounded-full bg-cash transition-[width] duration-300" style={{ width: `${pct}%` }} />
+      </div>
+      <p className="mt-2 text-[12px] text-faint">{p && p.stage !== "loading data" ? `Market ${p.current.toLocaleString()} of ${p.total.toLocaleString()} — replaying each one second by second.` : "The first test after an update loads all data (about 30 s)."}</p>
     </div>
   );
 }

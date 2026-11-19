@@ -230,6 +230,22 @@ def custom_data_status():
     return cb.status()
 
 
+@router.post("/custom-strategies/test-start")
+def custom_test_start(body: _TestIn):
+    from ..services import custom_backtest as cb
+    return {"job": cb.start_job(body.params, max(1.0, body.start_balance), body.days)}
+
+
+@router.get("/custom-strategies/test-job/{jid}")
+def custom_test_job(jid: str):
+    from fastapi import HTTPException
+    from ..services import custom_backtest as cb
+    j = cb.job(jid)
+    if j is None:
+        raise HTTPException(404, "test not found (the server may have restarted) — press Test again")
+    return j
+
+
 @router.post("/custom-strategies/test")
 async def custom_test(body: _TestIn):
     from ..services import custom_backtest as cb

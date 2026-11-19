@@ -24,15 +24,19 @@ from ..strategies.custom import AMS, evaluate_custom, merged, safety_z, stake_us
 from .market_state import MarketState
 
 _cache: dict = {"ts": 0.0, "data": None}
-_lock = threading.Lock()
+_lock = threading.Lock()            # guards swapping _cache (held for microseconds only)
+_refresh_lock = threading.Lock()    # one refresh at a time; tests never wait for it once data exists
+_results: dict = {}                 # same strategy + same data -> instant answer
 FEE = FeeSchedule()
+NUM = {"secs": "secs_remaining", "up_bid": "up_bid", "up_ask": "up_ask", "down_bid": "down_bid", "down_ask": "down_ask",
+       "ubl": "up_bid_liq", "dbl": "down_bid_liq", "spot": "spot", "fast": "fast_spot", "twap": "twap_window",
+       "vol": "vol_30s", "mom": "mom_10s"}
 
 
-def _load() -> dict:
-    mk = pd.read_sql(text("SELECT id, asset, slug, open_ts, close_ts, winner, price_to_beat, COALESCE(window,'5m') AS window "
-                          "FROM markets WHERE status='resolved' AND winner IN ('UP','DOWN')"), engine)
+def _load_batch(mk: pd.DataFrame) -> tuple[dict, dict]:
+    """Observations of these markets as plain numpy arrays (fast to replay) + each market's price to beat."""
     if mk.empty:
-        return {"markets": mk, "obs": {}}
+        return {}, {}
     ids = ",".join(str(int(i)) for i in mk.id)
     ob = pd.read_sql(text(f"""SELECT market_id, server_ts, secs_remaining, up_bid, up_ask, down_bid, down_ask, up_asks_json,
         down_asks_json, up_bid_liq, down_bid_liq, spot, fast_spot, twap_window, vol_30s, mom_10s
@@ -50,25 +54,60 @@ def _load() -> dict:
             ts, px = spot_by_asset.get(r.asset, (np.array([]), np.array([])))
             m = (ts > r.open_ts - 60_000) & (ts <= r.open_ts)
             v = float(px[m].mean()) if m.sum() >= 20 else None
-        ptb[r.id] = v
+            if v is None:   # previous market not in this batch (incremental refresh) -> ask the database
+                q = pd.read_sql(text("""SELECT AVG(o.spot) AS v, COUNT(o.spot) AS n FROM market_observations o
+                    WHERE o.market_id IN (SELECT id FROM markets WHERE asset = :a AND close_ts >= :lo AND open_ts <= :hi)
+                    AND o.server_ts > :lo AND o.server_ts <= :hi"""),
+                                engine, params={"a": r.asset, "lo": int(r.open_ts) - 60_000, "hi": int(r.open_ts)})
+                if len(q) and (q.n.iloc[0] or 0) >= 20:
+                    v = float(q.v.iloc[0])
+        ptb[int(r.id)] = v
+    close_by = dict(zip(mk.id.astype(int), mk.close_ts.astype(int)))
+    for c in NUM.values():
+        ob[c] = pd.to_numeric(ob[c], errors="coerce").astype(float)
     obs = {}
-    for mid, g in ob.groupby("market_id"):
-        g = g.reset_index(drop=True)
-        close = int(mk.loc[mk.id == mid, "close_ts"].iloc[0])
-        inwin = g.server_ts > close - 60_000
-        sp = g.spot.where(inwin)
-        cs = sp.fillna(0).cumsum(); cn = sp.notna().cumsum()
-        g["tw"] = np.where(g.twap_window.notna(), g.twap_window, np.where(cn > 0, cs / cn.replace(0, np.nan), np.nan))
-        obs[mid] = g
-    return {"markets": mk.set_index("id"), "obs": obs, "ptb": ptb}
+    for mid, g in ob.groupby("market_id", sort=False):
+        a = {k: g[c].to_numpy(dtype=float) for k, c in NUM.items()}
+        a["ts"] = g.server_ts.to_numpy(dtype=np.int64)
+        a["ua"] = g.up_asks_json.to_numpy(dtype=object)
+        a["da"] = g.down_asks_json.to_numpy(dtype=object)
+        sp = np.where(a["ts"] > close_by[int(mid)] - 60_000, a["spot"], np.nan)
+        cs = np.cumsum(np.nan_to_num(sp)); cn = np.cumsum(~np.isnan(sp))
+        with np.errstate(invalid="ignore", divide="ignore"):
+            a["tw"] = np.where(~np.isnan(a["twap"]), a["twap"], np.where(cn > 0, cs / np.maximum(cn, 1), np.nan))
+        a["fav_up"] = np.nan_to_num(a["up_ask"]) >= np.nan_to_num(a["down_ask"])
+        obs[int(mid)] = a
+    return obs, ptb
+
+
+def refresh(full: bool = False) -> dict:
+    """Load only markets that finished since the last refresh (resolved markets never change)."""
+    with _refresh_lock:
+        mk = pd.read_sql(text("SELECT id, asset, slug, open_ts, close_ts, winner, price_to_beat, COALESCE(window,'5m') AS window "
+                              "FROM markets WHERE status='resolved' AND winner IN ('UP','DOWN')"), engine)
+        cur = None if full else _cache["data"]
+        live = set(int(i) for i in mk.id)
+        if cur is None:
+            obs, ptb, seen = {}, {}, set()
+        else:   # keep what we have (minus anything deleted by a reset)
+            obs = {k: v for k, v in cur["obs"].items() if k in live}
+            ptb = {k: v for k, v in cur["ptb"].items() if k in live}
+            seen = cur["seen"] & live
+        new = mk[~mk.id.isin(seen)]
+        o2, p2 = _load_batch(new)
+        obs.update(o2); ptb.update(p2)
+        D = {"markets": mk.set_index("id"), "obs": obs, "ptb": ptb, "seen": seen | set(int(i) for i in new.id)}
+        with _lock:
+            _cache["data"] = D
+            _cache["ts"] = time.time()
+            _results.clear()
+        return D
 
 
 def data(force: bool = False) -> dict:
-    with _lock:
-        if force or _cache["data"] is None or time.time() - _cache["ts"] > 900:   # background refresh keeps it fresh
-            _cache["data"] = _load()
-            _cache["ts"] = time.time()
-        return _cache["data"]
+    if force or _cache["data"] is None:
+        return refresh()
+    return _cache["data"]          # the background task refreshes every 5 minutes without blocking tests
 
 
 def status() -> dict:
@@ -89,28 +128,42 @@ def _levels(js) -> list[tuple[float, float]]:
         return []
 
 
-def _state(m, row, ptb) -> MarketState:
-    ua, da = _levels(row.up_asks_json), _levels(row.down_asks_json)
-    st = MarketState(market_id=int(row.market_id), asset=m.asset, slug=m.slug, condition_id=None, up_token="u", down_token="d",
-                     open_ts=int(m.open_ts), close_ts=int(m.close_ts), server_ts=int(row.server_ts),
-                     secs_remaining=float(row.secs_remaining), open_price=ptb, fee=FEE, min_order_size=5.0, tick_size=0.01,
-                     up_bid=row.up_bid if row.up_bid == row.up_bid else None, up_ask=row.up_ask if row.up_ask == row.up_ask else None,
-                     down_bid=row.down_bid if row.down_bid == row.down_bid else None,
-                     down_ask=row.down_ask if row.down_ask == row.down_ask else None,
-                     up_asks=ua, down_asks=da, book_ok=True, spot_ok=True, window=m.window,
-                     features={"spot": row.spot, "fast_spot": row.fast_spot if row.fast_spot == row.fast_spot else None,
-                               "twap_window": row.tw if row.tw == row.tw else None, "vol_30s": row.vol_30s if row.vol_30s == row.vol_30s else None,
-                               "mom_10s": row.mom_10s if row.mom_10s == row.mom_10s else None, "ptb_exact": True})
-    if st.up_bid is not None:
-        st.up_bids = [(st.up_bid, (row.up_bid_liq or 0) / max(st.up_bid, 0.01))]
-    if st.down_bid is not None:
-        st.down_bids = [(st.down_bid, (row.down_bid_liq or 0) / max(st.down_bid, 0.01))]
+def _f(x):
+    return None if x != x else float(x)
+
+
+def _state(m, a: dict, i: int, ptb) -> MarketState:
+    ub, ua_, db, da_ = _f(a["up_bid"][i]), _f(a["up_ask"][i]), _f(a["down_bid"][i]), _f(a["down_ask"][i])
+    st = MarketState(market_id=int(m.Index), asset=m.asset, slug=m.slug, condition_id=None, up_token="u", down_token="d",
+                     open_ts=int(m.open_ts), close_ts=int(m.close_ts), server_ts=int(a["ts"][i]),
+                     secs_remaining=float(a["secs"][i]), open_price=ptb, fee=FEE, min_order_size=5.0, tick_size=0.01,
+                     up_bid=ub, up_ask=ua_, down_bid=db, down_ask=da_,
+                     up_asks=_levels(a["ua"][i]), down_asks=_levels(a["da"][i]), book_ok=True, spot_ok=True, window=m.window,
+                     features={"spot": float(a["spot"][i]), "fast_spot": _f(a["fast"][i]), "twap_window": _f(a["tw"][i]),
+                               "vol_30s": _f(a["vol"][i]), "mom_10s": _f(a["mom"][i]), "ptb_exact": True})
+    if ub is not None:
+        liq = a["ubl"][i]
+        st.up_bids = [(ub, (0.0 if liq != liq else liq) / max(ub, 0.01))]
+    if db is not None:
+        liq = a["dbl"][i]
+        st.down_bids = [(db, (0.0 if liq != liq else liq) / max(db, 0.01))]
     return st
 
 
-def run(params: dict, start_balance: float = 100.0, days: float | None = None) -> dict:
+def _key(params: dict, start_balance: float, days) -> str:
+    return json.dumps([merged(params), start_balance, days], sort_keys=True, default=str)
+
+
+def run(params: dict, start_balance: float = 100.0, days: float | None = None, progress=None) -> dict:
     p = merged(params)
     D = data()
+    key = _key(params, start_balance, days)
+    hit = _results.get(key)
+    if hit and hit[0] is D:
+        if progress:
+            n = int(hit[1].get("markets_tested") or 0)
+            progress(n, n)
+        return hit[1]
     mk, obs, ptbs = D["markets"], D["obs"], D.get("ptb", {})
     if mk is None or len(mk) == 0:
         return {"error": "no recorded markets yet"}
@@ -122,37 +175,45 @@ def run(params: dict, start_balance: float = 100.0, days: float | None = None) -
     t_lo, t_hi = float(p["entry_min_secs"]), float(p["entry_max_secs"])
     side_mode = p.get("side", "favourite")
     decisions, reasons = [], {}
-    for mid, m in sel.sort_values("close_ts").iterrows():
-        g = obs.get(mid); ptb = ptbs.get(mid)
-        if g is None or not ptb:
+    total = int(len(sel))
+    if progress:
+        progress(0, total)
+    for k_, m in enumerate(sel.sort_values("close_ts").itertuples()):
+        if progress and (k_ % 50 == 0 or k_ == total - 1):
+            progress(k_ + 1, total)
+        mid = int(m.Index)
+        a = obs.get(mid); ptb = ptbs.get(mid)
+        if a is None or not ptb:
             continue
-        w = g[(g.secs_remaining >= t_lo) & (g.secs_remaining <= t_hi)]
-        if w.empty:
-            continue
-        fav_up = w.up_ask.fillna(0) >= w.down_ask.fillna(0)
         if side_mode == "favourite":
-            ask = np.where(fav_up, w.up_ask, w.down_ask)
+            ask = np.where(a["fav_up"], a["up_ask"], a["down_ask"])
         elif side_mode == "underdog":
-            ask = np.where(fav_up, w.down_ask, w.up_ask)
+            ask = np.where(a["fav_up"], a["down_ask"], a["up_ask"])
         elif side_mode in ("up", "UP"):
-            ask = w.up_ask.to_numpy()
+            ask = a["up_ask"]
         else:
-            ask = w.down_ask.to_numpy()
-        cand = w[(ask >= lo_p - 1e-9) & (ask <= hi_p + 1e-9)]
-        for row in cand.itertuples():
-            st = _state(m, row, ptb)
-            dcs, why = evaluate_custom(st, p)
+            ask = a["down_ask"]
+        secs = a["secs"]
+        with np.errstate(invalid="ignore"):
+            idx = np.flatnonzero((secs >= t_lo) & (secs <= t_hi) & (ask >= lo_p - 1e-9) & (ask <= hi_p + 1e-9))
+        ts = a["ts"]; n = len(ts)
+        for i in idx:
+            i = int(i)
+            dcs, why = evaluate_custom(_state(m, a, i, ptb), p)
             if dcs is None:
-                reasons[why.split(" ")[0] if why else "?"] = reasons.get(why.split(" ")[0] if why else "?", 0) + 1
+                r_ = why.split(" ")[0] if why else "?"
+                reasons[r_] = reasons.get(r_, 0) + 1
                 continue
-            nxt = g[g.server_ts > row.server_ts].head(1)
-            if nxt.empty:
+            j = i + 1                                         # next observation (~1 s later) = our fill
+            while j < n and ts[j] <= ts[i]:
+                j += 1
+            if j >= n:
                 break
-            decisions.append({"mid": mid, "asset": m.asset, "window": m.window, "ts": int(row.server_ts),
-                              "secs": float(row.secs_remaining), "side": dcs.side, "ask": dcs.decision_ask, "limit": dcs.limit_price,
-                              "fill_levels": _levels(nxt.iloc[0].up_asks_json if dcs.side == "UP" else nxt.iloc[0].down_asks_json),
+            decisions.append({"mid": mid, "asset": m.asset, "window": m.window, "ts": int(ts[i]),
+                              "secs": float(secs[i]), "side": dcs.side, "ask": dcs.decision_ask, "limit": dcs.limit_price,
+                              "fill_levels": _levels(a["ua"][j] if dcs.side == "UP" else a["da"][j]),
                               "close": int(m.close_ts), "won": m.winner == dcs.side, "z": dcs.reasons.get("z"),
-                              "model": dcs.reasons.get("model_win_prob"), "after": g[g.server_ts > nxt.iloc[0].server_ts], "m": m, "ptb": ptb})
+                              "model": dcs.reasons.get("model_win_prob"), "after": (a, j + 1), "m": m, "ptb": ptb})
             break
     # ---- chronological money simulation
     decisions.sort(key=lambda x: x["ts"])
@@ -217,16 +278,18 @@ def run(params: dict, start_balance: float = 100.0, days: float | None = None) -
         tp, sp, zs = float(p.get("take_profit_price") or 0), float(p.get("stop_price") or 0), float(p.get("z_stop") or 0)
         proceeds, how, exit_ts = None, None, dcs["close"]
         if 0 < tp < 1 or 0 < sp < 1:
-            for r in dcs["after"].itertuples():
-                bid = r.up_bid if dcs["side"] == "UP" else r.down_bid
-                if bid != bid or bid is None:
+            a, j0 = dcs["after"]
+            bids = a["up_bid"] if dcs["side"] == "UP" else a["down_bid"]
+            for r in range(j0, len(bids)):
+                bid = float(bids[r])
+                if bid != bid:
                     continue
                 if 0 < tp < 1 and bid >= tp:
-                    proceeds, how, exit_ts = got * bid - taker_fee(got, bid, FEE), "sold early (take profit)", int(r.server_ts); break
+                    proceeds, how, exit_ts = got * bid - taker_fee(got, bid, FEE), "sold early (take profit)", int(a["ts"][r]); break
                 if 0 < sp < 1 and bid <= sp:
-                    z = safety_z(_state(dcs["m"], r, dcs["ptb"]), dcs["side"], bool(p.get("use_fast")))
+                    z = safety_z(_state(dcs["m"], a, r, dcs["ptb"]), dcs["side"], bool(p.get("use_fast")))
                     if z is None or z < zs:
-                        proceeds, how, exit_ts = got * bid - taker_fee(got, bid, FEE), "stop-loss", int(r.server_ts); break
+                        proceeds, how, exit_ts = got * bid - taker_fee(got, bid, FEE), "stop-loss", int(a["ts"][r]); break
         if proceeds is None:
             proceeds = got if dcs["won"] else 0.0
             how = "won" if dcs["won"] else "lost"
@@ -263,4 +326,50 @@ def run(params: dict, start_balance: float = 100.0, days: float | None = None) -
                     "max_drawdown": round(float((bal_series - bal_series.cummax()).min()), 2), "longest_losing_streak": int(best),
                     "by_coin": T.groupby("coin").pnl.agg(["count", "sum"]).round(2).reset_index().rename(columns={"count": "trades", "sum": "pnl"}).to_dict("records"),
                     "by_result": T.groupby("result").pnl.agg(["count", "sum"]).round(2).reset_index().rename(columns={"count": "trades", "sum": "pnl"}).to_dict("records")})
+    if len(_results) > 50:
+        _results.clear()
+    _results[key] = (D, out)
+    return out
+
+
+# ---------------- background test jobs (so the app can show "market X of Y")
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+
+_pool = ThreadPoolExecutor(max_workers=2)
+JOBS: dict[str, dict] = {}
+
+
+def start_job(params: dict, start_balance: float = 100.0, days: float | None = None) -> str:
+    jid = uuid.uuid4().hex[:12]
+    st = status()
+    JOBS[jid] = {"done": False, "stage": "loading data" if not st.get("loaded") else "testing", "current": 0,
+                 "total": st.get("markets") or 0, "result": None, "error": None, "started": time.time()}
+
+    def prog(i, n):
+        JOBS[jid].update(stage="testing", current=i, total=n)
+
+    def work():
+        try:
+            JOBS[jid]["result"] = run(params, start_balance, days, progress=prog)
+        except Exception as e:  # pragma: no cover - surfaced to the UI
+            JOBS[jid]["error"] = str(e)
+        finally:
+            JOBS[jid]["done"] = True
+            JOBS[jid]["current"] = JOBS[jid]["total"]
+        # forget old jobs
+        for k in [k for k, v in JOBS.items() if v["done"] and time.time() - v["started"] > 1800]:
+            JOBS.pop(k, None)
+
+    _pool.submit(work)
+    return jid
+
+
+def job(jid: str) -> dict | None:
+    j = JOBS.get(jid)
+    if j is None:
+        return None
+    out = {k: j[k] for k in ("done", "stage", "current", "total", "error")}
+    if j["done"]:
+        out["result"] = j["result"]
     return out

@@ -46,7 +46,7 @@ async def _backtest_warm():
     await asyncio.sleep(20)
     while True:
         try:
-            await asyncio.to_thread(cb.data, True)
+            await asyncio.to_thread(cb.refresh)
         except Exception:
             log.exception("strategy builder data refresh failed")
         await asyncio.sleep(300)
