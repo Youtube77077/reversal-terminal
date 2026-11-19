@@ -41,6 +41,15 @@ def _eng():
     return collector.engine
 
 
+@router.get("/accounts/{aid}/why")
+def account_why(aid: int, minutes: int = 30):
+    """Why a running bot has (not) traded recently, in plain language."""
+    e = _eng()
+    if e is None:
+        return {"minutes": minutes, "reasons": []}
+    return e.why_summary(aid, max(1, min(minutes, 60)))
+
+
 # ================================================================ accounts
 class AccountIn(BaseModel):
     name: str

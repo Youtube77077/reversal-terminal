@@ -266,6 +266,7 @@ function Running({ acct, ss, busy, onStop }: { acct: any; ss: any; busy: boolean
         <Box k="Budget" v={usd(ss.risk_budget)} /><Box k="In trades" v={usd(ss.open_at_risk)} /><Box k="Can still use" v={usd(left)} />
       </div>
       <BotSettings acct={acct} />
+      {!done && <WhyPanel acct={acct} traded={trades.length > 0} />}
       <div className="mt-6 text-[13px] font-bold opacity-75">Where your money went</div>
       <div className="mt-2 space-y-2">
         {trades.length === 0 && <div className="rounded-3xl bg-black/10 p-4 text-[14px] opacity-80">No trades yet. Keep the app closed or open — the bot keeps running on the server.</div>}
@@ -311,6 +312,37 @@ function fmtVal(k: string, v: any) {
   if (typeof v === "boolean") return v ? "yes" : "no";
   if (typeof v === "number" && /price/.test(k) && v > 0 && v < 1) return `${Math.round(v * 1000) / 10}¢`;
   return String(v);
+}
+
+/** Live: what is stopping the bot from trading (last 30 minutes, each reason counted in seconds). */
+function WhyPanel({ acct, traded }: { acct: any; traded: boolean }) {
+  const { data } = usePoll<any>(`/api/accounts/${acct.id}/why`, 5000);
+  const rows: any[] = data?.reasons || [];
+  if (!rows.length) return null;
+  const total = rows.reduce((a, r) => a + r.seconds, 0) || 1;
+  const fmt = (s: number) => (s >= 60 ? `${Math.floor(s / 60)} min ${s % 60 ? `${s % 60} s` : ""}` : `${s} s`);
+  const ago = (ts: number) => { const s = Math.max(0, Math.round((Date.now() - ts) / 1000)); return s < 60 ? `${s}s ago` : `${Math.round(s / 60)} min ago`; };
+  return (
+    <div className="mt-6">
+      <div className="text-[13px] font-bold opacity-75">{traded ? "What the bot is doing" : "Why no trade yet?"} · last {data.minutes} min</div>
+      <div className="mt-2 space-y-2">
+        {rows.slice(0, 6).map((r) => {
+          const bad = r.reason.startsWith("Stake too small");
+          return (
+            <div key={r.reason} className={clsx("rounded-3xl px-4 py-3", bad ? "bg-red-500/25" : "bg-black/10")}>
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="text-[14px] font-bold">{r.reason}</span>
+                <span className="num shrink-0 text-[13px] opacity-80">{fmt(r.seconds)} · {Math.round((r.seconds / total) * 100)}%</span>
+              </div>
+              {r.example && r.example !== "waiting" && <div className="mt-0.5 text-[12px] opacity-70">latest: {r.example} · {ago(r.last_ts)}</div>}
+              {bad && <div className="mt-1 text-[12px] font-semibold">Add money to this wallet, or raise "Stake" and "Max loss per trade" in the Strategy builder.</div>}
+            </div>
+          );
+        })}
+      </div>
+      <p className="mt-2 text-[12px] opacity-70">Every second the bot checks every coin. These are the reasons it said &quot;not now&quot;, and for how long.</p>
+    </div>
+  );
 }
 
 /** Tap "Settings" on a running bot to see exactly what it does. */

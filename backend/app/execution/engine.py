@@ -78,6 +78,8 @@ class TradingEngine:
         self.last_tick_ts: int | None = None
         self.tasks: set[asyncio.Task] = set()
         self._done: set[tuple[int, int]] = set()             # (account, market) at its trade limit
+        self._why: dict[int, dict] = {}                       # account -> minute -> reason -> [seconds, example, ts]
+        self._why_last: dict[tuple[int, str], float] = {}     # throttle: count each reason at most once a second
         self._rejected: set[tuple[int, int, str]] = set()   # dedupe identical rejections per market
         self._fast_accounts: list[dict] = []                 # accounts running a FAST strategy (e.g. O)
         self._fast_task: asyncio.Task | None = None
@@ -261,7 +263,11 @@ class TradingEngine:
         stake = stake_usd(p, equity)
         shares = math.floor(stake / d.limit_price * 100) / 100 if d.limit_price else 0
         if shares < (st.min_order_size or 5) or shares * d.limit_price < max(1.0, float(p.get("min_order_usd") or 1)):
-            return f"stake ${stake:.2f} too small for a valid order"
+            min_cost = max((st.min_order_size or 5) * d.limit_price, 1.0)
+            pct = min(float(p["stake_value"]), float(p.get("max_loss_pct") or 100)) if p.get("stake_mode") != "fixed" else 0
+            need = f"; the wallet needs about ${min_cost / (pct / 100):.0f} at {pct:g}% per trade" if pct else ""
+            return (f"stake ${stake:.2f} too small: Polymarket needs at least 5 shares = ${min_cost:.2f} "
+                    f"(balance ${equity:.2f}){need}")
         d.shares = shares
         return None
 
@@ -269,7 +275,9 @@ class TradingEngine:
         try:
             why = await asyncio.to_thread(self._custom_prepare, account_id, d, st)
             if why:
-                self._done.add((account_id, st.market_id)) if "per day" in why or "today" in why else None
+                self._note_why(account_id, why)
+                if "per day" in why or "today" in why or "too small" in why:
+                    self._done.add((account_id, st.market_id))
                 return
             opened = await asyncio.to_thread(self._open_order, account_id, st, d, exp_id)
             if not opened:
@@ -530,6 +538,7 @@ class TradingEngine:
                         for acct in self._fast_accounts:
                             params = json.loads(acct["params_json"] or "{}")
                             wins = params.get("windows") or ["5m"]
+                            checked = False
                             for st in states:
                                 if (st.asset not in acct["assets"] or st.asset in getattr(self, "_paused_assets", set())
                                         or st.window not in wins):
@@ -539,14 +548,22 @@ class TradingEngine:
                                     continue
                                 diag: dict = {}
                                 decision, why = evaluate(acct["strategy_key"], st, params, ctx, diag)
+                                checked = checked or why != "outside entry window"
                                 if diag:
                                     self._note_candidate(acct, st, diag, why, decision is not None)
                                 if decision is None:
+                                    self._note_why(acct["id"], why)
                                     continue
+                                self._note_why(acct["id"], f"signal found: {st.asset} {decision.side} at {decision.decision_ask:.2f}")
                                 self.inflight.add(key)
                                 t = asyncio.create_task(self._enter(acct["id"], st, decision, acct["exp_id"]))
                                 self.tasks.add(t)
                                 t.add_done_callback(self.tasks.discard)
+                            if not checked:
+                                self._note_why(acct["id"], "waiting")
+                    else:
+                        for acct in self._fast_accounts:
+                            self._note_why(acct["id"], "waiting")
             except Exception:
                 log.exception("fast loop error")
             # wait for the next order-book change, or FAST_MS at most; never spin faster than 20 ms
@@ -558,6 +575,39 @@ class TradingEngine:
             except asyncio.TimeoutError:
                 pass
             self._wake.clear()
+
+    def _note_why(self, account_id: int, why: str | None) -> None:
+        """Remember why a bot did not trade (counted at most once per second per reason)."""
+        cat = why_category(why)
+        t = time.time()
+        if t - self._why_last.get((account_id, cat), 0) < 1.0:
+            return
+        self._why_last[(account_id, cat)] = t
+        w = self._why.setdefault(account_id, {})
+        b = w.setdefault(int(t // 60), {})
+        e = b.get(cat)
+        if e is None:
+            b[cat] = [1, why or "", now_ms()]
+        else:
+            e[0] += 1; e[1] = why or ""; e[2] = now_ms()
+        if len(w) > 70:
+            for k in sorted(w)[:-61]:
+                w.pop(k, None)
+
+    def why_summary(self, account_id: int, minutes: int = 30) -> dict:
+        now_min = int(time.time() // 60)
+        agg: dict[str, list] = {}
+        for m, b in list(self._why.get(account_id, {}).items()):
+            if m <= now_min - minutes:
+                continue
+            for cat, (n, ex, ts) in b.items():
+                a = agg.setdefault(cat, [0, ex, ts])
+                a[0] += n
+                if ts >= a[2]:
+                    a[1], a[2] = ex, ts
+        rows = [{"reason": c, "seconds": v[0], "example": v[1], "last_ts": v[2]} for c, v in agg.items()]
+        rows.sort(key=lambda r: -r["seconds"])
+        return {"minutes": minutes, "reasons": rows[:12]}
 
     def _note_candidate(self, acct: dict, st: MarketState, diag: dict, why: str | None, traded: bool) -> None:
         key = (acct["id"], st.market_id)
@@ -850,3 +900,36 @@ def _bids_fills(bids, shares: float, min_price: float):
         out.append((p, take))
         left -= take
     return out if left <= 1e-6 else None
+
+
+WHY_LABELS = [
+    ("waiting", "Waiting: no market is in your time window right now"),
+    ("outside entry window", "Waiting: no market is in your time window right now"),
+    ("signal found", "Signal found: order sent"),
+    ("too small", "Stake too small for Polymarket's 5-share minimum"),
+    ("safety margin z none", "Safety margin unknown (price feed not ready)"),
+    ("news blackout", "News blackout (weekdays 14:25-14:45)"),
+    ("moving fast against", "Price moving fast against our side"),
+    ("model edge", "Model edge too small"),
+    ("above cap", "Model chance above your cap"),
+    ("not enough sellers", "Not enough sellers at your price"),
+    ("no sellers", "Not enough sellers at your price"),
+    ("order book not ready", "No prices yet"),
+    ("no prices", "No prices yet"),
+]
+
+
+def why_category(why: str | None) -> str:
+    w = (why or "").lower()
+    if "safety margin" in w and "none" not in w:
+        return "Safety margin too low: coin too close to the price to beat" if "<" in w else "Safety margin above your maximum"
+    if " ask " in w and "outside" in w:
+        return "Price outside your range"
+    if "model chance" in w and "price+fee" in w:
+        return "Model chance too low for the price (no edge after fees)"
+    for key, label in WHY_LABELS:
+        if label and key in w:
+            return label
+    import re
+    g = re.sub(r"[-+]?\$?\d+(\.\d+)?%?", "…", why or "unknown").strip()   # group same reason with different numbers
+    return (g[:1].upper() + g[1:])[:90]
